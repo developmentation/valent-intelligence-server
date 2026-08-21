@@ -41,6 +41,22 @@ app.post('/ingest', express.raw({ type: () => true, limit: '64mb' }), async (req
   }
 });
 
+// ---- diagnostics (token-gated, no login) ----
+app.get('/admin/stats', async (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  try {
+    const q = (s) => pool.query(s).then(r => r.rows);
+    const [byKind, byStream, biggest, sessions, lastBatch] = await Promise.all([
+      q(`select kind, count(*)::int n, coalesce(sum(bytes),0)::bigint bytes, coalesce(max(bytes),0)::bigint maxb from files group by kind order by n desc`),
+      q(`select stream, count(*)::int n, coalesce(sum(bytes),0)::bigint bytes, coalesce(max(bytes),0)::bigint maxb from files group by stream order by bytes desc limit 40`),
+      q(`select session_id, stream, filename, bytes from files order by bytes desc limit 12`),
+      q(`select id, device, file_count, record_count, bytes, updated_at from sessions order by updated_at desc`),
+      q(`select session_id, idx, bytes, members, received_at from batches order by received_at desc limit 8`),
+    ]);
+    res.json({ byKind, byStream, biggest, sessions, lastBatch });
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
 // ---- admin auth ----
 app.use(session({
   secret: process.env.SESSION_SECRET || crypto.randomBytes(24).toString('hex'),
