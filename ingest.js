@@ -13,6 +13,22 @@ const AUDIO_EXT = new Set(['aac', 'm4a', 'opus', 'ogg', 'wav', 'mp3', 'flac']);
 function sha256hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
+
+/**
+ * Postgres `jsonb` cannot store a NUL character (U+0000) and rejects the whole insert with
+ * "unsupported Unicode escape sequence". Sensor/text fields occasionally carry a stray NUL, so
+ * strip it (from string values AND keys) before we serialize. Returns a clean copy.
+ */
+function stripNul(v) {
+  if (typeof v === 'string') return v.indexOf('\u0000') >= 0 ? v.replace(/\u0000/g, '') : v;
+  if (Array.isArray(v)) return v.map(stripNul);
+  if (v && typeof v === 'object') {
+    const out = {};
+    for (const k of Object.keys(v)) out[k.indexOf('\u0000') >= 0 ? k.replace(/\u0000/g, '') : k] = stripNul(v[k]);
+    return out;
+  }
+  return v;
+}
 function extOf(name) {
   const i = name.lastIndexOf('.');
   return i >= 0 ? name.slice(i + 1).toLowerCase() : '';
@@ -120,24 +136,43 @@ async function ingestJsonl(sessionId, stream, bytes) {
     if (!s) continue;
     let o;
     try { o = JSON.parse(s); } catch { continue; }
-    rows.push([sessionId, stream, (typeof o.ern === 'number' ? o.ern : null), walOf(o), o]);
+    // Strip NUL bytes so a single bad record can't 500 the whole batch (and jam the phone's retry).
+    rows.push([sessionId, stream, (typeof o.ern === 'number' ? o.ern : null), walOf(o), stripNul(o)]);
   }
-  // batch insert
+  // Batch insert. `records` is a DERIVED index — the raw .jsonl is already persisted to disk in
+  // storeMember — so if a chunk trips a Postgres constraint we retry it row-by-row and skip only the
+  // offending record(s) rather than 500ing the whole batch (which would jam the phone's retry loop
+  // on the same batch forever). Nothing is lost that isn't already on disk.
   const CHUNK = 500;
+  let stored = 0;
   for (let i = 0; i < rows.length; i += CHUNK) {
     const slice = rows.slice(i, i + CHUNK);
-    const vals = [];
-    const ph = slice.map((r, j) => {
-      const b = j * 5;
-      vals.push(r[0], r[1], r[2], r[3], JSON.stringify(r[4]));
-      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5})`;
-    }).join(',');
-    await pool.query(
-      `insert into records (session_id, stream, ern, wall, data) values ${ph}`,
-      vals,
-    );
+    try {
+      await insertRecords(slice);
+      stored += slice.length;
+    } catch (e) {
+      let skipped = 0;
+      for (const r of slice) {
+        try { await insertRecords([r]); stored++; }
+        catch (e2) { skipped++; }
+      }
+      if (skipped) console.warn(`ingest: skipped ${skipped}/${slice.length} bad records in ${sessionId}/${stream}:`, e.message);
+    }
   }
-  return rows.length;
+  return stored;
+}
+
+async function insertRecords(slice) {
+  const vals = [];
+  const ph = slice.map((r, j) => {
+    const b = j * 5;
+    vals.push(r[0], r[1], r[2], r[3], JSON.stringify(r[4]));
+    return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5})`;
+  }).join(',');
+  await pool.query(
+    `insert into records (session_id, stream, ern, wall, data) values ${ph}`,
+    vals,
+  );
 }
 
 async function upsertSessionFromManifest(sessionId, bytes) {
