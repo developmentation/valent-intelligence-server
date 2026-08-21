@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Valent Intelligence — travels</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{--bg:#0d0d0d;--card:#1a1a19;--line:#2c2c2a;--ink:#fff;--mut:#8a8a86;--accent:#3987e5;--coral:#ff5a3c;--good:#0ca30c}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:15px;margin:0;font-weight:700;letter-spacing:.02em}
+  header .sp{flex:1}
+  select,button{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px}
+  a.logout{color:var(--mut);font-size:12px;text-decoration:none}
+  .status{display:flex;gap:10px;flex-wrap:wrap;padding:12px 18px}
+  .chip{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 13px;min-width:120px}
+  .chip .k{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+  .chip .v{font-size:17px;font-weight:700;margin-top:2px}
+  .grid{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:0 18px 24px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .panel h2{font-size:12px;margin:0;padding:11px 14px;border-bottom:1px solid var(--line);color:var(--mut);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  #map{height:520px}
+  .gallery{padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:520px;overflow:auto}
+  .gallery figure{margin:0;border-radius:8px;overflow:hidden;background:#000;aspect-ratio:1;position:relative}
+  .gallery img,.gallery video{width:100%;height:100%;object-fit:cover;display:block}
+  .gallery .pv{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:2px 5px;border-radius:4px}
+  .empty{color:var(--mut);padding:24px;font-size:13px;text-align:center}
+  .leaflet-container{background:#111}
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰️ Valent Intelligence</h1>
+  <select id="session"><option value="">All sessions</option></select>
+  <span class="sp"></span>
+  <span id="live" style="font-size:12px;color:var(--mut)">—</span>
+  <form method="post" action="/logout" style="margin:0"><button class="logout">Sign out</button></form>
+</header>
+
+<div class="status" id="status"></div>
+
+<div class="grid">
+  <div class="panel"><h2>Where — de-noised GPS track</h2><div id="map"></div></div>
+  <div class="panel"><h2>Gallery</h2><div class="gallery" id="gallery"></div></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+let map, trackLayer, headMarker;
+
+function initMap(){
+  map = L.map('map', {zoomControl:true}).setView([53.3,-113.6], 4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {maxZoom:19, attribution:'© OpenStreetMap'}).addTo(map);
+  trackLayer = L.layerGroup().addTo(map);
+}
+function fmtAgo(ms){ if(!ms) return '—'; const s=(Date.now()-ms)/1000;
+  if(s<90) return Math.round(s)+'s ago'; if(s<5400) return Math.round(s/60)+'m ago';
+  if(s<172800) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
+
+async function loadSessions(){
+  const r = await fetch('/api/sessions'); const rows = await r.json();
+  const sel = $('#session'); const cur = sel.value;
+  sel.innerHTML = '<option value="">All sessions</option>' + rows.map(s=>{
+    const d = s.last_wall ? new Date(Number(s.last_wall)).toLocaleString() : s.id;
+    return `<option value="${s.id}">${s.id} · ${s.device||''} · ${d}</option>`;
+  }).join('');
+  sel.value = cur;
+}
+async function loadStatus(){
+  const s = await (await fetch('/api/status')).json();
+  const t = s.totals||{};
+  const chips = [
+    ['Doing', s.activity ? s.activity.label : '—', s.activity && s.activity.wall],
+    ['Last seen', s.location ? `${s.location.lat.toFixed(3)}, ${s.location.lon.toFixed(3)}` : '—', s.location && s.location.wall],
+    ['Wi-Fi', s.wifi ? s.wifi.count+' APs' : '—', s.wifi && s.wifi.wall],
+    ['Satellites', s.gnss ? `${s.gnss.used}/${s.gnss.inView}` : '—', s.gnss && s.gnss.wall],
+    ['Media', (t.media||0)+' items', null],
+    ['Records', Number(t.records||0).toLocaleString(), null],
+  ];
+  $('#status').innerHTML = chips.map(([k,v,w])=>`<div class="chip"><div class="k">${k}</div><div class="v">${v}</div>${w?`<div class="k" style="margin-top:3px">${fmtAgo(w)}</div>`:''}</div>`).join('');
+  const newest = [s.activity,s.location,s.wifi,s.gnss].map(x=>x&&x.wall).filter(Boolean).sort((a,b)=>b-a)[0];
+  $('#live').textContent = newest ? 'last push '+fmtAgo(newest) : 'awaiting first push';
+}
+async function loadTrack(){
+  const sess = $('#session').value;
+  const pts = await (await fetch('/api/track'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
+  trackLayer.clearLayers();
+  if(!pts.length) return;
+  const line = pts.filter(p=>p.suspect!=='true').map(p=>[p.lat,p.lon]);
+  if(line.length>1) L.polyline(line, {color:'#ff5a3c', weight:3, opacity:.9}).addTo(trackLayer);
+  const last = pts[pts.length-1];
+  L.circleMarker([last.lat,last.lon], {radius:7,color:'#fff',weight:3,fillColor:'#ff5a3c',fillOpacity:1}).addTo(trackLayer);
+  try{ map.fitBounds(L.latLngBounds(line.length?line:[[last.lat,last.lon]]).pad(0.2)); }catch(e){}
+}
+async function loadGallery(){
+  const sess = $('#session').value;
+  const items = await (await fetch('/api/gallery'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
+  const g = $('#gallery');
+  if(!items.length){ g.innerHTML='<div class="empty">No photos or video yet.</div>'; return; }
+  g.innerHTML = items.map(it=> it.type==='video'
+    ? `<figure><video src="${it.url}" muted preload="metadata" onclick="this.paused?this.play():this.pause()"></video><span class="pv">▶</span></figure>`
+    : `<figure><a href="${it.url}" target="_blank"><img loading="lazy" src="${it.url}"></a></figure>`).join('');
+}
+async function refresh(){ await Promise.all([loadStatus(), loadTrack(), loadGallery()]); }
+
+initMap();
+loadSessions().then(refresh);
+$('#session').addEventListener('change', refresh);
+setInterval(()=>{ loadSessions(); loadStatus(); }, 20000);
+setInterval(()=>{ loadTrack(); loadGallery(); }, 60000);
+</script>
+</body>
+</html>

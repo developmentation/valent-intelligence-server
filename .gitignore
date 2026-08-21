@@ -1,0 +1,8 @@
+node_modules/
+.env
+.env.*
+*.local
+data/
+*.apk
+npm-debug.log*
+.DS_Store
