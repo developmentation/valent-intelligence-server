@@ -156,14 +156,20 @@ app.get('/media/*', requireAdmin, (req, res) => {
 
 // ---- APK distribution (remote updates without a cable) ----
 app.get('/download', (_req, res) => {
-  let list = [];
-  try { list = fs.readdirSync(APK_DIR).filter(f => f.endsWith('.apk')); } catch (_) {}
-  res.type('html').send(downloadPage(list));
+  res.type('html').send(downloadPage(apksByNewest()));
 });
 app.get('/download/app.apk', (_req, res) => {
   const latest = latestApk();
   if (!latest) return res.status(404).send('No APK published yet.');
   res.download(path.join(APK_DIR, latest), 'valent-capture.apk');
+});
+// Deliberate download of a specific build (rollback). Basename-guarded to stay inside APK_DIR.
+app.get('/download/apk/:name', (req, res) => {
+  const name = path.basename(req.params.name || '');
+  if (!name.endsWith('.apk')) return res.status(400).send('bad name');
+  const p = path.join(APK_DIR, name);
+  if (!fs.existsSync(p)) return res.status(404).send('no such build');
+  res.download(p, name);
 });
 // I publish new builds here with the ingest token (kept off the public surface).
 app.post('/admin/apk', express.raw({ type: () => true, limit: '256mb' }), (req, res) => {
@@ -171,16 +177,36 @@ app.post('/admin/apk', express.raw({ type: () => true, limit: '256mb' }), (req, 
   if (!INGEST_TOKEN || auth !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
   const name = (req.header('x-apk-name') || `valent-${Date.now()}.apk`).replace(/[^a-zA-Z0-9._-]/g, '_');
   fs.writeFileSync(path.join(APK_DIR, name), req.body);
-  res.json({ ok: true, name, bytes: req.body.length });
+  const pruned = pruneApks(3); // keep newest 3 (latest + two rollback points)
+  res.json({ ok: true, name, bytes: req.body.length, pruned });
+});
+// Manual delete of a specific build (same admin token as publish).
+app.delete('/admin/apk/:name', (req, res) => {
+  const auth = req.header('authorization') || '';
+  if (!INGEST_TOKEN || auth !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const name = path.basename(req.params.name || '');
+  if (!name.endsWith('.apk')) return res.status(400).json({ ok: false, error: 'bad name' });
+  const p = path.join(APK_DIR, name);
+  if (!fs.existsSync(p)) return res.status(404).json({ ok: false, error: 'not found' });
+  fs.unlinkSync(p);
+  res.json({ ok: true, deleted: name });
 });
 
-function latestApk() {
+function apksByNewest() {
   try {
-    const files = fs.readdirSync(APK_DIR).filter(f => f.endsWith('.apk'))
-      .map(f => ({ f, t: fs.statSync(path.join(APK_DIR, f)).mtimeMs }))
+    return fs.readdirSync(APK_DIR).filter(f => f.endsWith('.apk'))
+      .map(f => ({ f, t: fs.statSync(path.join(APK_DIR, f)).mtimeMs, size: fs.statSync(path.join(APK_DIR, f)).size }))
       .sort((a, b) => b.t - a.t);
-    return files[0] && files[0].f;
-  } catch (_) { return null; }
+  } catch (_) { return []; }
+}
+function latestApk() { const l = apksByNewest(); return l[0] && l[0].f; }
+// Keep only the newest `keep` builds; delete the rest. Returns names removed.
+function pruneApks(keep) {
+  const removed = [];
+  apksByNewest().slice(keep).forEach(({ f }) => {
+    try { fs.unlinkSync(path.join(APK_DIR, f)); removed.push(f); } catch (_) {}
+  });
+  return removed;
 }
 
 // ---- phone setup (QR to configure the app's Sync) ----
@@ -210,13 +236,17 @@ button{width:100%;padding:10px;border:0;border-radius:8px;background:#3987e5;col
 <input type=password name=password placeholder=Password autofocus><button>Sign in</button></form>`;
 }
 function downloadPage(list) {
-  const rows = list.length ? list.map(f => `<li><a href="/download/app.apk">${f}</a></li>`).join('') : '<li>No APK published yet.</li>';
+  const mb = b => (b / 1048576).toFixed(1) + ' MB';
+  const rows = list.length
+    ? list.map((x, i) => `<li><a href="/download/apk/${encodeURIComponent(x.f)}">${x.f}</a> <span class=mut>· ${mb(x.size)}${i === 0 ? ' · <b style="color:#0ca30c">latest</b>' : ''}</span></li>`).join('')
+    : '<li>No APK published yet.</li>';
   return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Install Valent Capture</title>
 <style>body{background:#0d0d0d;color:#eee;font-family:system-ui;max-width:640px;margin:40px auto;padding:0 18px;line-height:1.5}
-a{color:#3987e5}code{background:#1a1a19;padding:2px 5px;border-radius:4px}</style>
-<h1>Install Valent Capture</h1><p>Tap to download the latest build, then open it to install. A reinstall over the same app <b>keeps your sessions and permissions</b> (it just stops any live recording).</p>
+a{color:#3987e5}code{background:#1a1a19;padding:2px 5px;border-radius:4px}.mut{color:#8a8a86;font-size:13px}
+h2{font-size:13px;color:#8a8a86;text-transform:uppercase;letter-spacing:.05em;margin-top:26px}</style>
+<h1>Install Valent Capture</h1><p>Tap the button for the newest build, then open it to install. A reinstall over the same app <b>keeps your sessions and permissions</b> (it just stops any live recording; re-grant Health data after an update).</p>
 <p><a href="/download/app.apk" style="display:inline-block;background:#3987e5;color:#fff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:600">Download latest APK</a></p>
-<ul>${rows}</ul>`;
+<h2>All builds (newest first)</h2><ul>${rows}</ul>`;
 }
 
 function setupPage(qr, endpoint, key) {
