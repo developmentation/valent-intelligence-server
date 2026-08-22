@@ -276,7 +276,9 @@ let map, trackLayer, headMarker, tileLayer, mapExpanded=false;
 let mapTheme='dark'; try{ mapTheme=localStorage.getItem('liveMapTheme')||'dark'; }catch(e){}
 const TILES={ dark:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
               light:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' };
-let state={ sid:null, device:'', live:false, first:0, last:0,
+// first/last are DEVICE wall clock (for duration); liveAt is the SERVER receive time (updated_at) —
+// the skew-proof recency signal used for live/replay + "last signal", since the device clock can be wrong.
+let state={ sid:null, device:'', live:false, first:0, last:0, liveAt:0,
   items:[], curIdx:0, auto:true, track:[], unpinT:null, replayT:null, muted:true };
 
 // ---------- map ----------
@@ -482,7 +484,7 @@ function fillInfo(){
   const add=(k,v)=>{ if(v!=null&&v!=='') rows.push(`<div class="r"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`); };
   add('Session', state.sid||'—');
   add('State', state.live?'Live':'Replay');
-  add('Last signal', state.last?fmtAgo(state.last):'—');
+  add('Last signal', state.liveAt?fmtAgo(state.liveAt):'—');
   if(s.battery&&s.battery.percent!=null) add('Battery', Math.round(s.battery.percent)+'%'+(s.battery.charging?' · charging':''));
   if(s.gnss) add('Satellites', `${s.gnss.used}/${s.gnss.inView} in view`);
   if(s.location&&s.location.acc!=null) add('GPS accuracy', `±${Math.round(s.location.acc)} m`);
@@ -534,13 +536,15 @@ async function pickSession(){
   const rows=await jget('/api/sessions');
   if(!rows.length){ $('#empty').classList.add('show'); $('#subline').textContent='no sessions yet'; return; }
   const s=rows[0];  // newest
-  const isLive=(Date.now()-Number(s.last_wall||0))<LIVE_WINDOW;
+  const upd=Date.parse(s.updated_at||'')||0;
+  const isLive=(Date.now()-upd)<LIVE_WINDOW;   // recency by SERVER receive time, not the device clock
   if(s.id!==state.sid){ await enterSession(s,isLive); }
-  else { state.live=isLive; refreshMode(); }
+  else { state.liveAt=Math.max(state.liveAt,upd); refreshMode(); }
 }
 async function enterSession(s,isLive){
   clearInterval(state.replayT);
   state.sid=s.id; state.device=s.device||''; state.first=Number(s.first_wall||0); state.last=Number(s.last_wall||0);
+  state.liveAt=Date.parse(s.updated_at||'')||Date.now();
   state.live=isLive; state.auto=true; state.mode=isLive?'live':'replay';
   $('#empty').classList.remove('show');
   $('#devname').textContent=state.device;
@@ -554,16 +558,16 @@ async function enterSession(s,isLive){
   toast(isLive?'● Live session':'Replaying last session');
 }
 function refreshMode(){
-  const now=Date.now(); const live=(now-state.last)<LIVE_WINDOW;
+  const now=Date.now(); const live=(now-state.liveAt)<LIVE_WINDOW;   // liveAt = server receive time
   state.live=live; state.mode=live?'live':'replay';
   $('#livedot').className='dot'+(live?'':' replay'); $('#badge').className='badge'+(live?'':' replay');
   $('#badge .st').textContent=live?'LIVE':'REPLAY';
-  const dur=Math.max(0,(state.last-state.first)); const mins=Math.round(dur/60000);
-  $('#subline').textContent=(state.sid||'')+'  ·  '+(live?('live · '+fmtAgo(state.last)):(mins+' min · '+new Date(state.first).toLocaleString()));
+  const dur=Math.max(0,(state.last-state.first)); const mins=Math.round(dur/60000);   // device walls → duration
+  $('#subline').textContent=(state.sid||'')+'  ·  '+(live?('live · '+fmtAgo(state.liveAt)):(mins+' min session'));
   // Staleness: a "live" session with no signal for >2 min is likely stalled (battery died, lost
   // connectivity, or interrupted). Surface how long it's been quiet; >4 min it drops to REPLAY above.
-  const stale=$('#stale'), gap=now-state.last;
-  if(live && gap>120000){ stale.className='stale show'; stale.textContent='⚠ no signal for '+fmtAgo(state.last).replace(' ago',''); }
+  const stale=$('#stale'), gap=now-state.liveAt;
+  if(live && gap>120000){ stale.className='stale show'; stale.textContent='⚠ no signal for '+fmtAgo(state.liveAt).replace(' ago',''); }
   else stale.className='stale';
   setPill();
   if(state.mode==='replay') startReplay(); else clearInterval(state.replayT);
@@ -609,7 +613,7 @@ function connectSSE(){
       // string-greater = newer. The 15s poll is only a backstop.
       if(!state.sid || d.session>state.sid){ pickSession(); return; }
       if(d.session!==state.sid) return;     // a straggler from an older session — ignore
-      state.last=Date.now(); refreshMode(); // any event on the current session keeps it "live"
+      state.liveAt=Date.now(); if(d.wall) state.last=Number(d.wall); refreshMode(); // any event keeps it "live"
       if(d.type==='photo'){ onNewMedia(d.url); }
       else if(d.type==='live'){ if(d.lat!=null && state.live) moveHead(d.lat,d.lon); }
       else if(d.type==='ingest'){ refreshFusion(); }

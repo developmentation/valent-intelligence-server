@@ -85,6 +85,17 @@ app.post('/ingest/live', express.json({ limit: '512kb' }), (req, res) => {
   if (b.scene && b.scene.label) t.scene = { label: b.scene.label, score: b.scene.score, wall: Number(b.scene.wall) || Date.now() };
   t.updated = Date.now();
   if (Math.random() < 0.05) pruneLive();
+  // Register the session immediately (before its first bulk batch) so /api/sessions — and thus /live +
+  // the dashboard — can discover a freshly-started session within one live post (~10s) instead of
+  // waiting a whole chunk. Best-effort; the manifest upsert later fills in the real name/clock.
+  // `updated_at = now()` is the SERVER clock — the skew-proof recency signal (device wall can be wrong).
+  const liveWall = (t.latest && Number(t.latest.wall)) || Date.now();
+  pool.query(
+    `insert into sessions (id, device, last_wall, updated_at) values ($1, 'Valent', $2, now())
+     on conflict (id) do update set
+       last_wall = greatest(coalesce(sessions.last_wall, excluded.last_wall), excluded.last_wall),
+       updated_at = now()`,
+    [sid, liveWall]).catch(() => {});
   sseBroadcast({ type: 'live', session: sid, lat: t.latest && t.latest.lat, lon: t.latest && t.latest.lon, wall: t.latest && t.latest.wall, scene: t.scene, added });
   res.json({ ok: true, added, held: t.pts.length });
 });
