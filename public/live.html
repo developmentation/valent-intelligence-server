@@ -384,9 +384,13 @@ function setLocDisplay(lat,lon,acc){
 function stageLoading(on){ const el=$('#stageload'); if(el) el.classList.toggle('show', !!on); }
 
 // ---------- media stage (cross-fade) ----------
-let front=$('#layA'), back=$('#layB'), curVideo=null;
+let front=$('#layA'), back=$('#layB'), curVideo=null, stageGen=0;
+// Blank the stage — used on a session switch so a new session with no media yet can't keep showing the
+// PREVIOUS session's image, and so a stale async load can't reveal old content.
+function clearStage(){ stageGen++; front.innerHTML=''; back.innerHTML=''; front.classList.remove('on'); back.classList.remove('on'); curVideo=null; stageLoading(false); }
 function showItem(idx,{fade=true}={}){
   const it=state.items[idx]; if(!it) return;
+  const gen=++stageGen;   // supersede any in-flight load; only the latest showItem may reveal
   state.curIdx=idx; markStrip();
   // The newest item while auto+live = "current": show the LIVE position (status-driven). Any other
   // item (a strip pick, or replay) = show THAT photo's own GPS + place name, pinned on the map.
@@ -398,17 +402,19 @@ function showItem(idx,{fade=true}={}){
   // load event AND a timeout — and each call swapped the layers, so the second flipped the PREVIOUS
   // media back into view. That was the "it plays the old image/video" glitch.)
   let swapped=false;
-  const done=()=>{ if(swapped) return; swapped=true; stageLoading(false); back.classList.add('on'); front.classList.remove('on'); [front,back]=[back,front]; };
+  // Reveal the freshly-built BACK layer exactly once, and ONLY if this is still the latest showItem
+  // (gen check) — so a superseded load from a previous item/session can never swap old media in.
+  const done=()=>{ if(swapped || gen!==stageGen) return; swapped=true; stageLoading(false); back.classList.add('on'); front.classList.remove('on'); [front,back]=[back,front]; };
   if(it.type==='video'){
     $('#unmute').classList.remove('show');
     const v=document.createElement('video'); v.className='fg'; v.src=it.url;
-    // No autoplay/loop on the live stage: a large, non-faststart phone MP4 played before it's buffered
-    // (esp. over mobile) renders as macroblock "squares". Show controls; reveal the first frame when we
-    // have it and try a muted play, but tolerate failure — the viewer can tap play, and we NEVER revert.
+    // No forced autoplay of large, non-faststart phone MP4s (they render as macroblock "squares" if
+    // played before buffered, esp. over mobile). Reveal the first frame, then auto-play only once the
+    // browser can play THROUGH without stalling; otherwise the viewer taps the controls. Never revert.
     v.muted=true; v.playsInline=true; v.controls=true; v.preload='auto';
     v.setAttribute('playsinline',''); curVideo=v;
-    v.addEventListener('loadeddata',()=>{ done(); },{once:true});          // reveal the first frame ASAP
-    v.addEventListener('canplay',()=>{ v.play().catch(()=>{}); },{once:true}); // only start once buffered
+    v.addEventListener('loadeddata',()=>{ done(); },{once:true});               // reveal the first frame ASAP
+    v.addEventListener('canplaythrough',()=>{ if(gen===stageGen) v.play().catch(()=>{}); },{once:true}); // play only when it won't stall
     v.addEventListener('error',()=>{ done(); },{once:true});   // show the element (poster/controls), don't flip back
     v.addEventListener('ended',()=>{ if(state.mode==='replay') stepReplay(); });
     const bg=document.createElement('div'); bg.className='bg'; bg.style.background='#000';
@@ -596,6 +602,8 @@ async function pickSession(){
 }
 async function enterSession(s,isLive){
   clearInterval(state.replayT);
+  clearStage();   // wipe the previous session's media off the stage before we load this one's
+  state.pinnedLoc=null;
   state.sid=s.id; state.device=s.device||''; state.first=Number(s.first_wall||0); state.last=Number(s.last_wall||0);
   state.liveAt=Date.parse(s.updated_at||'')||Date.now();
   state.tzOffsetMin=(s.tz_offset_min!=null)?Number(s.tz_offset_min):null;   // subject-local time offset
