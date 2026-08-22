@@ -134,7 +134,7 @@ app.get('/api/status', requireAdmin, async (_req, res) => {
   const totals = (await pool.query(
     `select (select count(*) from sessions) sessions,
             (select count(*) from files where kind='media') media,
-            (select count(*) from records) records,
+            (select coalesce(sum(record_count),0) from sessions) records,
             (select coalesce(sum(bytes),0) from files) bytes`)).rows[0];
   res.json({
     activity: activity && { label: activity.data.label, engine: activity.data.engine, wall: Number(activity.wall) },

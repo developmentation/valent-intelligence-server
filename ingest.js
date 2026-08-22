@@ -42,6 +42,22 @@ function kindOf(filename, stream) {
 }
 
 /**
+ * Only these record streams get exploded into the Postgres `records` index — they are the ONLY ones
+ * the dashboard reads (GPS track + latest-status: location/gnss/wifi/motion_activity). Every raw
+ * file still lands on disk in full, so full-fidelity reconstruction reads the FILES by their real
+ * timestamps; the DB is a lean query index, not the source of truth. This keeps Postgres small and
+ * fast (the bulk streams — events, audio_scene, device, cell… — never hit the DB). Override or widen
+ * with env INDEX_STREAMS=csv; set INDEX_STREAMS=* to index everything (legacy behaviour).
+ */
+const INDEX_STREAMS_RAW = (process.env.INDEX_STREAMS || 'location,gnss,wifi,motion_activity').trim();
+const INDEX_ALL = INDEX_STREAMS_RAW === '*';
+const INDEX_STREAMS = new Set(INDEX_STREAMS_RAW.split(',').map((s) => s.trim()).filter(Boolean));
+function shouldIndex(stream, o) {
+  if (INDEX_ALL || INDEX_STREAMS.has(stream)) return true;
+  return o != null && (o.lat !== undefined || o.lon !== undefined); // any GPS-bearing record → track
+}
+
+/**
  * Parse a gzip(VBATCH1) body into its members.
  * Container: a UTF-8 text header ending in a line "--", then the concatenated raw member bytes.
  *   VBATCH1
@@ -131,11 +147,16 @@ async function storeMember(m) {
 async function ingestJsonl(sessionId, stream, bytes) {
   const text = bytes.toString('utf8');
   const rows = [];
+  let seen = 0;
   for (const line of text.split('\n')) {
     const s = line.trim();
     if (!s) continue;
     let o;
     try { o = JSON.parse(s); } catch { continue; }
+    seen++;
+    // The raw .jsonl is already on disk (full fidelity); only explode dashboard-queryable streams
+    // into Postgres so the DB stays a lean index instead of a multi-million-row blob store.
+    if (!shouldIndex(stream, o)) continue;
     // Strip NUL bytes so a single bad record can't 500 the whole batch (and jam the phone's retry).
     rows.push([sessionId, stream, (typeof o.ern === 'number' ? o.ern : null), walOf(o), stripNul(o)]);
   }
@@ -159,7 +180,9 @@ async function ingestJsonl(sessionId, stream, bytes) {
       if (skipped) console.warn(`ingest: skipped ${skipped}/${slice.length} bad records in ${sessionId}/${stream}:`, e.message);
     }
   }
-  return stored;
+  // Report ALL records captured (they're all on disk), not just the indexed subset, so the session's
+  // record_count reflects true capture volume even though most streams aren't exploded into the DB.
+  return seen;
 }
 
 async function insertRecords(slice) {
