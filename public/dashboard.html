@@ -6,7 +6,7 @@
 <title>Valent Intelligence — travels</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-  :root{--bg:#0d0d0d;--card:#1a1a19;--line:#2c2c2a;--ink:#fff;--mut:#8a8a86;--accent:#3987e5;--coral:#ff5a3c;--good:#0ca30c}
+  :root{--bg:#0d0d0d;--card:#1a1a19;--line:#2c2c2a;--ink:#fff;--mut:#8a8a86;--accent:#3987e5;--coral:#ff5a3c;--good:#0ca30c;--violet:#7c5cff}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
   header{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
@@ -14,17 +14,29 @@
   header .sp{flex:1}
   select,button{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px}
   a.logout{color:var(--mut);font-size:12px;text-decoration:none}
-  .status{display:flex;gap:10px;flex-wrap:wrap;padding:12px 18px}
+  .lv{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--mut)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--mut);flex:none}
+  .dot.on{background:var(--good);box-shadow:0 0 0 0 rgba(12,163,12,.6);animation:pulse 1.6s infinite}
+  .dot.warn{background:#fab219}
+  .dot.off{background:var(--coral)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.5)}70%{box-shadow:0 0 0 7px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
+  .status{display:flex;gap:10px;flex-wrap:wrap;padding:12px 18px 4px}
   .chip{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 13px;min-width:120px}
   .chip .k{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
   .chip .v{font-size:17px;font-weight:700;margin-top:2px}
-  .grid{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:0 18px 24px}
+  .chip .v.flash{animation:flash .9s ease-out}
+  @keyframes flash{0%{color:var(--violet)}100%{color:var(--ink)}}
+  .feed{margin:6px 18px 0;height:26px;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--mut);white-space:nowrap}
+  .feed .row{line-height:26px}
+  .feed .add{color:var(--violet)}
+  .grid{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:10px 18px 24px}
   @media(max-width:900px){.grid{grid-template-columns:1fr}}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
-  .panel h2{font-size:12px;margin:0;padding:11px 14px;border-bottom:1px solid var(--line);color:var(--mut);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  .panel h2{font-size:12px;margin:0;padding:11px 14px;border-bottom:1px solid var(--line);color:var(--mut);text-transform:uppercase;letter-spacing:.06em;font-weight:600;display:flex;justify-content:space-between}
   #map{height:520px}
   .gallery{padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:520px;overflow:auto}
   .gallery figure{margin:0;border-radius:8px;overflow:hidden;background:#000;aspect-ratio:1;position:relative}
+  .gallery figure.fresh{outline:2px solid var(--violet);animation:flash 2s ease-out}
   .gallery img,.gallery video{width:100%;height:100%;object-fit:cover;display:block}
   .gallery .pv{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:2px 5px;border-radius:4px}
   .empty{color:var(--mut);padding:24px;font-size:13px;text-align:center}
@@ -36,23 +48,26 @@
   <h1>🛰️ Valent Intelligence</h1>
   <select id="session"><option value="">All sessions</option></select>
   <span class="sp"></span>
-  <span id="live" style="font-size:12px;color:var(--mut)">—</span>
+  <span class="lv"><span id="dot" class="dot"></span><span id="live">connecting…</span></span>
   <a href="/setup" style="color:var(--accent);font-size:13px;text-decoration:none;font-weight:600">📱 Connect phone</a>
   <a href="/download" style="color:var(--mut);font-size:12px;text-decoration:none">Install APK</a>
   <form method="post" action="/logout" style="margin:0"><button class="logout">Sign out</button></form>
 </header>
 
 <div class="status" id="status"></div>
+<div class="feed" id="feed"><div class="row">Waiting for the live stream…</div></div>
 
 <div class="grid">
-  <div class="panel"><h2>Where — de-noised GPS track</h2><div id="map"></div></div>
-  <div class="panel"><h2>Gallery</h2><div class="gallery" id="gallery"></div></div>
+  <div class="panel"><h2><span>Where — de-noised GPS track</span><span id="mapmeta"></span></h2><div id="map"></div></div>
+  <div class="panel"><h2><span>Gallery</span><span id="galmeta"></span></h2><div class="gallery" id="gallery"></div></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const $ = s => document.querySelector(s);
-let map, trackLayer, headMarker;
+let map, trackLayer;
+let knownGallery = new Set();          // urls already shown, so new ones can flash
+let evCount = 0, lastEventMs = 0;
 
 function initMap(){
   map = L.map('map', {zoomControl:true}).setView([53.3,-113.6], 4);
@@ -73,6 +88,7 @@ async function loadSessions(){
   }).join('');
   sel.value = cur;
 }
+function setChip(el, val){ if(el && el.textContent !== String(val)){ el.textContent = val; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } }
 async function loadStatus(){
   const s = await (await fetch('/api/status')).json();
   const t = s.totals||{};
@@ -85,13 +101,12 @@ async function loadStatus(){
     ['Records', Number(t.records||0).toLocaleString(), null],
   ];
   $('#status').innerHTML = chips.map(([k,v,w])=>`<div class="chip"><div class="k">${k}</div><div class="v">${v}</div>${w?`<div class="k" style="margin-top:3px">${fmtAgo(w)}</div>`:''}</div>`).join('');
-  const newest = [s.activity,s.location,s.wifi,s.gnss].map(x=>x&&x.wall).filter(Boolean).sort((a,b)=>b-a)[0];
-  $('#live').textContent = newest ? 'last push '+fmtAgo(newest) : 'awaiting first push';
 }
 async function loadTrack(){
   const sess = $('#session').value;
   const pts = await (await fetch('/api/track'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
   trackLayer.clearLayers();
+  $('#mapmeta').textContent = pts.length ? pts.length.toLocaleString()+' pts' : '';
   if(!pts.length) return;
   const line = pts.filter(p=>p.suspect!=='true').map(p=>[p.lat,p.lon]);
   if(line.length>1) L.polyline(line, {color:'#ff5a3c', weight:3, opacity:.9}).addTo(trackLayer);
@@ -103,18 +118,63 @@ async function loadGallery(){
   const sess = $('#session').value;
   const items = await (await fetch('/api/gallery'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
   const g = $('#gallery');
-  if(!items.length){ g.innerHTML='<div class="empty">No photos or video yet.</div>'; return; }
-  g.innerHTML = items.map(it=> it.type==='video'
-    ? `<figure><video src="${it.url}" muted preload="metadata" onclick="this.paused?this.play():this.pause()"></video><span class="pv">▶</span></figure>`
-    : `<figure><a href="${it.url}" target="_blank"><img loading="lazy" src="${it.url}"></a></figure>`).join('');
+  $('#galmeta').textContent = items.length ? items.length+' items' : '';
+  if(!items.length){ g.innerHTML='<div class="empty">No photos or video yet.</div>'; knownGallery=new Set(); return; }
+  g.innerHTML = items.map(it=>{
+    const fresh = knownGallery.size && !knownGallery.has(it.url) ? ' fresh' : '';
+    return it.type==='video'
+      ? `<figure class="fig${fresh}"><video src="${it.url}" muted preload="metadata" onclick="this.paused?this.play():this.pause()"></video><span class="pv">▶</span></figure>`
+      : `<figure class="fig${fresh}"><a href="${it.url}" target="_blank"><img loading="lazy" src="${it.url}"></a></figure>`;
+  }).join('');
+  knownGallery = new Set(items.map(it=>it.url));
 }
 async function refresh(){ await Promise.all([loadStatus(), loadTrack(), loadGallery()]); }
 
+// ---- live status indicator ----
+function setLive(state){
+  const dot = $('#dot'), txt = $('#live');
+  dot.className = 'dot ' + (state==='streaming'?'on':state==='reconnecting'?'warn':'off');
+  txt.textContent = state==='streaming'
+    ? `live · ${evCount} events · ${fmtAgo(lastEventMs)}`
+    : state==='reconnecting' ? 'reconnecting…' : 'offline';
+}
+setInterval(()=>{ // decay to "idle" if no event for >90s, and keep the "ago" fresh
+  if(lastEventMs && Date.now()-lastEventMs>90000) { $('#dot').className='dot warn'; $('#live').textContent='idle · '+fmtAgo(lastEventMs); }
+  else if(lastEventMs) $('#live').textContent=`live · ${evCount} events · ${fmtAgo(lastEventMs)}`;
+}, 5000);
+
+// ---- live feed ticker ----
+function pushFeed(ev){
+  const t = new Date(ev.at||Date.now()).toLocaleTimeString();
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `${t}  ${ev.session}  <span class="add">+${ev.storedNew||0} files · +${Number(ev.records||0).toLocaleString()} records</span>`;
+  const feed = $('#feed'); feed.prepend(row);
+  while(feed.childElementCount>1) feed.lastElementChild.remove();
+}
+
+// ---- SSE: the real-time stream. EventSource auto-reconnects, so a Wi-Fi switch self-heals. ----
+let refreshT=null;
+function scheduleRefresh(){ clearTimeout(refreshT); refreshT=setTimeout(()=>{ refresh(); loadSessions(); }, 1200); }
+function connectStream(){
+  const es = new EventSource('/api/stream', { withCredentials:true });
+  es.onopen = ()=> setLive(lastEventMs?'streaming':'streaming');
+  es.onerror = ()=> setLive('reconnecting');   // browser retries automatically (retry: 3000)
+  es.onmessage = (e)=>{
+    let ev; try{ ev=JSON.parse(e.data); }catch(_){ return; }
+    if(ev.type!=='ingest') return;
+    evCount++; lastEventMs=Date.now(); setLive('streaming'); pushFeed(ev);
+    const sel=$('#session').value;
+    if(!sel || sel===ev.session) scheduleRefresh();
+  };
+}
+
 initMap();
-loadSessions().then(refresh);
+loadSessions().then(refresh).then(connectStream);
 $('#session').addEventListener('change', refresh);
-setInterval(()=>{ loadSessions(); loadStatus(); }, 20000);
-setInterval(()=>{ loadTrack(); loadGallery(); }, 60000);
+// Slow safety-net polling in case SSE is blocked by a proxy; SSE is the primary path.
+setInterval(()=>{ loadSessions(); loadStatus(); }, 30000);
+setInterval(()=>{ if(!lastEventMs || Date.now()-lastEventMs>120000){ loadTrack(); loadGallery(); } }, 60000);
 </script>
 </body>
 </html>
