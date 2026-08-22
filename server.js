@@ -525,17 +525,21 @@ app.get('/api/track', requireAdmin, async (req, res) => {
   // vanishes and endpoints stay put). A single ordered scan; the map gets a smooth line without
   // shipping tens of thousands of points. (Persisted multi-tier rollups can replace this at huge scale.)
   const perSession = Math.min(6000, Math.max(300, parseInt(req.query.max, 10) || (s ? 4000 : 1200)));
-  const RAW_CAP = 20000;   // max RAW fixes per session to smooth (bounds CPU/memory per request)
-  // Fetch the RAW fixes (NOT SQL-decimated) — the Kalman/RTS smoother must see the full stream to
-  // reproduce the phone's clean line; we decimate the SMOOTHED output afterwards for LOD.
+  // Decimate ACROSS THE WHOLE SESSION (keep first + last + every Nth) so the full time span is covered
+  // — never truncate to the first N (that lopped off the afternoon on a 44k-fix day). This is also what
+  // the phone smooths over (it caps its live-track nodes), so smoothing the evenly-decimated points
+  // reproduces the phone's line. geotrack.clean below Kalman-smooths whatever it's handed.
   const q = await pool.query(
     `with pts as (
        select session_id, wall,
               (data->>'lat')::float8 lat, (data->>'lon')::float8 lon, (data->>'acc')::float8 acc,
-              row_number() over (partition by session_id order by wall) rn
+              row_number() over (partition by session_id order by wall) rn,
+              count(*)     over (partition by session_id) cnt
        from records where ${where} and data ? 'lat'
      )
-     select session_id, wall, lat, lon, acc from pts where rn <= ${RAW_CAP} order by session_id, wall`, args);
+     select session_id, wall, lat, lon, acc from pts
+     where rn = 1 or rn = cnt or rn % greatest(1, (cnt / ${perSession})::int) = 0
+     order by session_id, wall`, args);
   const bySession = new Map();
   for (const r of q.rows) {
     if (r.lat == null || r.lon == null) continue;
