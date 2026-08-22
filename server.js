@@ -158,9 +158,14 @@ app.get('/admin/validate', async (req, res) => {
     // manifest content are reported separately (naming differences / no-content streams).
     const perStream = Object.entries(manifestContent).map(([stream, want]) => {
       const have = byStream[stream] ? byStream[stream].indices : new Set();
+      const maxWant = want.size ? Math.max(...want) : -1;
       const missing = [...want].filter((i) => !have.has(i)).sort((a, b) => a - b);
-      const extra = [...have].filter((i) => !want.has(i)).sort((a, b) => a - b);
-      return { stream, manifestChunks: want.size, serverChunks: have.size, missing, extra, aligned: !missing.length && !extra.length };
+      const extraAll = [...have].filter((i) => !want.has(i)).sort((a, b) => a - b);
+      // A server chunk PAST the last closed one is the final open chunk of an interrupted capture
+      // (file written + uploaded, but the session died before chunk_close). Expected, not a defect.
+      const trailingExtra = extraAll.filter((i) => i > maxWant);
+      const extra = extraAll.filter((i) => i <= maxWant);   // a real unexpected file inside the range
+      return { stream, manifestChunks: want.size, serverChunks: have.size, missing, extra, trailingExtra, aligned: !missing.length && !extra.length };
     }).sort((a, b) => Number(a.aligned) - Number(b.aligned));
     const serverOnlyStreams = Object.keys(byStream)
       .filter((s) => manifestContent[s] === undefined && byStream[s].indices.size > 0);
