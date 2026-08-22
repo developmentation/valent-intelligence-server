@@ -96,6 +96,18 @@
   .headpulse{width:14px;height:14px;border-radius:50%;background:var(--accent);
     box-shadow:0 0 0 0 rgba(255,90,60,.6);animation:pulse2 2s infinite;border:2px solid #fff}
   @keyframes pulse2{0%{box-shadow:0 0 0 0 rgba(255,90,60,.55)}70%{box-shadow:0 0 0 14px rgba(255,90,60,0)}100%{box-shadow:0 0 0 0 rgba(255,90,60,0)}}
+  #mapwrap{cursor:pointer}
+  #mapwrap.expanded{position:fixed!important;inset:0!important;top:0!important;left:0!important;
+    right:0!important;bottom:0!important;width:100%!important;height:100%!important;border-radius:0;border:0;z-index:40;cursor:default}
+  .mbtn{position:absolute;width:36px;height:36px;border-radius:10px;border:1px solid var(--line);
+    background:var(--glass);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);display:grid;place-items:center;z-index:1001}
+  .mbtn svg{width:17px;height:17px;stroke:var(--ink);stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:.92}
+  #mapexpand{right:7px;top:7px;width:30px;height:30px}
+  #mapexpand svg{width:15px;height:15px}
+  #mapctl{position:absolute;top:calc(14px + env(safe-area-inset-top));right:16px;z-index:1001;display:none;gap:9px}
+  #mapctl .mbtn{position:static}
+  #mapwrap.expanded #mapexpand{display:none}
+  #mapwrap.expanded #mapctl{display:flex}
 
   /* ---- filmstrip ---- */
   #strip{position:fixed;left:0;right:0;bottom:0;z-index:6;
@@ -193,7 +205,14 @@
     </div>
   </div>
 
-  <div id="mapwrap"><div id="map"></div></div>
+  <div id="mapwrap">
+    <div id="map"></div>
+    <button id="mapexpand" class="mbtn" title="Expand map"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    <div id="mapctl">
+      <button id="maptheme" class="mbtn" title="Light / dark tiles"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg></button>
+      <button id="mapclose" class="mbtn" title="Close map"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+  </div>
 
   <button id="unmute"><svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4zM16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"/></svg> Tap for sound</button>
 
@@ -218,25 +237,58 @@ const POLL_MS=15000;           // baseline refresh (SSE nudges in between)
 const REPLAY_MS=6000;          // per-image dwell in the ended-session carousel
 const UNPIN_MS=20000;          // after a manual pick, revert to auto/newest
 
-let map, trackLayer, headMarker, fittedSession=null;
+let map, trackLayer, headMarker, tileLayer, mapExpanded=false;
+let mapTheme='dark'; try{ mapTheme=localStorage.getItem('liveMapTheme')||'dark'; }catch(e){}
+const TILES={ dark:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+              light:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' };
 let state={ sid:null, device:'', live:false, first:0, last:0,
   items:[], curIdx:0, auto:true, track:[], unpinT:null, replayT:null, muted:true };
 
 // ---------- map ----------
+function setTiles(theme){
+  mapTheme=theme; try{ localStorage.setItem('liveMapTheme',theme); }catch(e){}
+  if(tileLayer) map.removeLayer(tileLayer);
+  tileLayer=L.tileLayer(TILES[theme]||TILES.dark,{maxZoom:19,subdomains:'abcd'}).addTo(map);
+  $('#mapwrap').style.background=(theme==='light'?'#e9edf0':'#0a0d12');
+}
 function initMap(){
-  map=L.map('map',{zoomControl:false,attributionControl:false,dragging:true,scrollWheelZoom:false})
-      .setView([20,0],2);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,subdomains:'abcd'}).addTo(map);
+  // Mini map is a glance view: interactions OFF (a tap expands it). All are re-enabled when expanded.
+  map=L.map('map',{zoomControl:false,attributionControl:false,dragging:false,scrollWheelZoom:false,
+    doubleClickZoom:false,touchZoom:false,boxZoom:false,keyboard:false,tap:false}).setView([20,0],2);
+  setTiles(mapTheme);
   trackLayer=L.layerGroup().addTo(map);
+}
+// Fit the view to the whole GPS path. The mini map refits on every update (always shows the full
+// bounds); the expanded map fits once on open and is then free to pan/zoom without being yanked back.
+function fitTrack(){
+  const line=state.track.filter(p=>p.suspect!=='true').map(p=>[p.lat,p.lon]);
+  if(line.length){ try{ map.fitBounds(L.latLngBounds(line).pad(mapExpanded?.12:.3)); }catch(e){} }
 }
 function drawTrack(pts){
   trackLayer.clearLayers(); headMarker=null;
   const line=pts.filter(p=>p.suspect!=='true').map(p=>[p.lat,p.lon]);
-  if(line.length>1) L.polyline(line,{color:'#ff5a3c',weight:2.5,opacity:.8}).addTo(trackLayer);
-  if(state.sid!==fittedSession && line.length){
-    try{ map.fitBounds(L.latLngBounds(line).pad(.25)); }catch(e){}
-    fittedSession=state.sid;
-  }
+  if(line.length>1) L.polyline(line,{color:'#ff5a3c',weight:mapExpanded?3:2.5,opacity:.85}).addTo(trackLayer);
+  if(line.length){ const last=line[line.length-1]; moveHead(last[0],last[1]); }
+  if(!mapExpanded) fitTrack();   // mini map: always frame the whole path
+}
+function setMapInteractive(on){
+  ['dragging','scrollWheelZoom','doubleClickZoom','touchZoom','boxZoom','keyboard'].forEach(k=>{
+    if(map[k]){ on?map[k].enable():map[k].disable(); }
+  });
+}
+function expandMap(){
+  if(mapExpanded) return; mapExpanded=true;
+  $('#mapwrap').classList.add('expanded'); setMapInteractive(true);
+  if(!map._zc){ map._zc=L.control.zoom({position:'bottomright'}); map._zc.addTo(map); }
+  setTimeout(()=>{ map.invalidateSize(); fitTrack(); },70);
+  setTimeout(()=>map.invalidateSize(),340);
+}
+function collapseMap(){
+  if(!mapExpanded) return; mapExpanded=false;
+  $('#mapwrap').classList.remove('expanded'); setMapInteractive(false);
+  if(map._zc){ map.removeControl(map._zc); map._zc=null; }
+  setTimeout(()=>{ map.invalidateSize(); fitTrack(); },70);
+  setTimeout(()=>map.invalidateSize(),340);
 }
 function moveHead(lat,lon){
   if(lat==null||lon==null) return;
@@ -275,9 +327,9 @@ let front=$('#layA'), back=$('#layB'), curVideo=null;
 function showItem(idx,{fade=true}={}){
   const it=state.items[idx]; if(!it) return;
   state.curIdx=idx; markStrip();
-  // map follows the shown item's location (live head handled separately)
-  const L2=locForTime(new Date(it.received_at).getTime());
-  if(L2) moveHead(L2.lat,L2.lon);
+  // In replay, the map head follows the shown photo's GPS. In live, the head tracks the latest fix
+  // (driven by status/track/SSE), so don't override it from the browsed item.
+  if(state.mode==='replay'){ const L2=locForTime(new Date(it.received_at).getTime()); if(L2) moveHead(L2.lat,L2.lon); }
   back.innerHTML=''; curVideo=null;
   const done=()=>{ back.classList.add('on'); front.classList.remove('on'); [front,back]=[back,front]; };
   if(it.type==='video'){
@@ -391,7 +443,6 @@ async function enterSession(s,isLive){
   state.live=isLive; state.auto=true; state.mode=isLive?'live':'replay';
   $('#empty').classList.remove('show');
   $('#devname').textContent=state.device;
-  fittedSession=null;
   const [gal,trk]=await Promise.all([ jget('/api/gallery?session='+encodeURIComponent(s.id)),
                                       jget('/api/track?session='+encodeURIComponent(s.id)) ]);
   state.items=gal; state.track=trk.filter(p=>p.lat!=null);
@@ -482,6 +533,12 @@ $('#btnAudio').onclick=()=>openPanel('audio');
 $('#pclose').onclick=()=>$('#panel').classList.remove('open');
 // keep "live" freshness label ticking
 setInterval(()=>{ if(state.sid) refreshMode(); },30000);
+
+// map controls: tap the mini map (or the expand icon) to go full-screen; close/theme in the corner.
+$('#mapwrap').addEventListener('click',()=>{ if(!mapExpanded) expandMap(); });
+$('#mapexpand').addEventListener('click',e=>{ e.stopPropagation(); expandMap(); });
+$('#mapclose').addEventListener('click',e=>{ e.stopPropagation(); collapseMap(); });
+$('#maptheme').addEventListener('click',e=>{ e.stopPropagation(); setTiles(mapTheme==='dark'?'light':'dark'); });
 
 // boot
 initMap();
