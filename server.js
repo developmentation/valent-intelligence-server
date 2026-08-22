@@ -74,7 +74,7 @@ app.get('/admin/validate', async (req, res) => {
     // Per-stream chunk analysis + disk existence. Chunk index is the trailing _NNNNNN in the filename.
     // A chunk can have >1 file (e.g. audio: a .aac + a .anchors sidecar share the same index), so gaps
     // are computed over the SET of indices, and files vs chunks are reported separately.
-    const idxRe = /_(\d+)\.[^.]+$/;
+    const idxRe = /_(\d+)(?:\.|$)/;   // first _NNNNNN; tolerant of multi-part extensions (.accel.vstream)
     const extRe = /\.([^.]+)$/;
     const byStream = {};
     let onDisk = 0; const missingDisk = [];
@@ -160,9 +160,21 @@ app.get('/admin/validate', async (req, res) => {
       const extra = [...have].filter((i) => !want.has(i)).sort((a, b) => a - b);
       return { stream, manifestChunks: want.size, serverChunks: have.size, missing, extra, aligned: !missing.length && !extra.length };
     }).sort((a, b) => Number(a.aligned) - Number(b.aligned));
-    const misaligned = perStream.filter((a) => !a.aligned);
     const serverOnlyStreams = Object.keys(byStream)
       .filter((s) => manifestContent[s] === undefined && byStream[s].indices.size > 0);
+    // Reconcile stream-name differences (e.g. manifest 'sms_meta' stored under dir 'sms'): a fully
+    // absent manifest stream whose content indices are all present under a server-only stream is the
+    // same data under a different name — mark it aligned (renamed), not missing.
+    for (const a of perStream) {
+      if (a.aligned || a.serverChunks > 0) continue;
+      const want = manifestContent[a.stream];
+      const hit = serverOnlyStreams.find((so) => [...want].every((i) => byStream[so].indices.has(i)));
+      if (hit) {
+        a.aligned = true; a.renamedTo = hit; a.missing = []; a.serverChunks = byStream[hit].indices.size;
+        serverOnlyStreams.splice(serverOnlyStreams.indexOf(hit), 1);
+      }
+    }
+    const misaligned = perStream.filter((a) => !a.aligned);
     const manifestAligned = manifestPresent && perStream.length > 0 && misaligned.length === 0;
 
     const uploadOk = missingDisk.length === 0 && dbVsScan && manifestPresent;
