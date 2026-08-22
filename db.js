@@ -1,4 +1,6 @@
 'use strict';
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
 
 // Render Postgres requires SSL from outside its network; inside it's plain. Accept self-signed.
@@ -10,71 +12,44 @@ const pool = new Pool({
   max: 8,
 });
 
-const SCHEMA = `
-create table if not exists sessions (
-  id text primary key,
-  device text,
-  first_wall bigint,
-  last_wall bigint,
-  bytes bigint default 0,
-  file_count int default 0,
-  record_count bigint default 0,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
-);
-create table if not exists batches (
-  id bigserial primary key,
-  session_id text,
-  idx int,
-  sha256 text unique,
-  device text,
-  bytes bigint,
-  members int,
-  received_at timestamptz default now()
-);
-create table if not exists files (
-  id bigserial primary key,
-  session_id text,
-  stream text,
-  filename text,
-  path text,
-  sha256 text unique,
-  bytes bigint,
-  kind text,           -- 'media' | 'audio' | 'json' | 'binary'
-  received_at timestamptz default now()
-);
-create table if not exists records (
-  id bigserial primary key,
-  session_id text,
-  stream text,
-  ern bigint,
-  wall bigint,
-  data jsonb,
-  received_at timestamptz default now()
-);
--- Per session x stream catalog: the visualizer's manifest source (what streams exist, their real
--- time span, size). Cheap to keep current on ingest; never holds samples.
-create table if not exists streams (
-  session_id text,
-  stream text,
-  kind text,
-  first_wall bigint,
-  last_wall bigint,
-  file_count int default 0,
-  record_count bigint default 0,
-  bytes bigint default 0,
-  updated_at timestamptz default now(),
-  primary key (session_id, stream)
-);
-create index if not exists records_stream_wall on records (stream, wall);
-create index if not exists records_session on records (session_id, stream);
-create index if not exists files_session on files (session_id, kind);
-create index if not exists files_stream on files (session_id, stream, filename);
-create index if not exists streams_session on streams (session_id);
-`;
+/**
+ * Apply every migrations/*.sql not yet recorded, in filename order, each in its own transaction,
+ * exactly once. The schema lives in migrations/ (sequenced files) — NOT inline here — so every DB
+ * change is tracked and replayable. See migrations/README.md.
+ */
+async function migrate() {
+  await pool.query(
+    `create table if not exists schema_migrations (
+       version text primary key,
+       applied_at timestamptz default now()
+     )`);
+  const dir = path.join(__dirname, 'migrations');
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+  const applied = new Set(
+    (await pool.query('select version from schema_migrations')).rows.map((r) => r.version));
 
-async function init() {
-  await pool.query(SCHEMA);
+  for (const f of files) {
+    const version = f.replace(/\.sql$/, '');
+    if (applied.has(version)) continue;
+    const sql = fs.readFileSync(path.join(dir, f), 'utf8');
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(sql);
+      await client.query('insert into schema_migrations (version) values ($1)', [version]);
+      await client.query('commit');
+      console.log(`migrated: ${version}`);
+    } catch (e) {
+      await client.query('rollback').catch(() => {});
+      throw new Error(`migration ${version} failed: ${e.message}`);
+    } finally {
+      client.release();
+    }
+  }
 }
 
-module.exports = { pool, init };
+async function init() {
+  await migrate();
+}
+
+module.exports = { pool, init, migrate };
