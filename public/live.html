@@ -150,6 +150,7 @@
   @keyframes tin{from{opacity:0;transform:translateY(8px) scale(.92)}to{opacity:1;transform:none}}
   .thumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .45s}
   .thumb img.rdy{opacity:1}
+  .thumb video{width:100%;height:100%;object-fit:cover;display:block}
   /* skeleton shimmer while the bytes are still coming over a flaky link */
   .thumb.loading{background:linear-gradient(100deg,#12151c 30%,#1c2230 50%,#12151c 70%);
     background-size:220% 100%;animation:tin .5s ease both, shim 1.4s linear infinite}
@@ -408,14 +409,16 @@ function showItem(idx,{fade=true}={}){
   if(it.type==='video'){
     $('#unmute').classList.remove('show');
     const v=document.createElement('video'); v.className='fg'; v.src=it.url;
-    // No forced autoplay of large, non-faststart phone MP4s (they render as macroblock "squares" if
-    // played before buffered, esp. over mobile). Reveal the first frame, then auto-play only once the
-    // browser can play THROUGH without stalling; otherwise the viewer taps the controls. Never revert.
-    v.muted=true; v.playsInline=true; v.controls=true; v.preload='auto';
-    v.setAttribute('playsinline',''); curVideo=v;
-    v.addEventListener('loadeddata',()=>{ done(); },{once:true});               // reveal the first frame ASAP
-    v.addEventListener('canplaythrough',()=>{ if(gen===stageGen) v.play().catch(()=>{}); },{once:true}); // play only when it won't stall
-    v.addEventListener('error',()=>{ done(); },{once:true});   // show the element (poster/controls), don't flip back
+    // Muted autoplay (allowed by browsers): H.264 plays fine while it buffers — no "squares" (those
+    // were HEVC clips the browser can't decode at all). Reveal the first frame, then nudge play on
+    // canplay; controls stay so the viewer can play/scrub/unmute. On error still show the element,
+    // never flip back to the previous item.
+    v.muted=true; v.autoplay=true; v.playsInline=true; v.controls=true; v.preload='auto';
+    v.setAttribute('playsinline',''); v.setAttribute('autoplay',''); v.setAttribute('muted',''); curVideo=v;
+    const tryplay=()=>{ if(gen===stageGen) v.play().catch(()=>{}); };
+    v.addEventListener('loadeddata',()=>{ done(); tryplay(); },{once:true});    // reveal first frame + start
+    v.addEventListener('canplay', tryplay, {once:true});                        // nudge once enough is buffered
+    v.addEventListener('error',()=>{ done(); },{once:true});   // show the element (controls), don't flip back
     v.addEventListener('ended',()=>{ if(state.mode==='replay') stepReplay(); });
     const bg=document.createElement('div'); bg.className='bg'; bg.style.background='#000';
     back.append(bg,v);
@@ -568,9 +571,15 @@ function renderStrip(){
   state.items.forEach((it,i)=>{
     const d=document.createElement('div'); d.className='thumb loading'+(i===state.curIdx?' cur':'');
     if(it.type==='video'){
-      d.innerHTML=`<div class="pv">${svg('<path d="M8 5v14l11-7z"/>')}</div>`;
-      d.querySelector('.pv svg').setAttribute('fill','#fff'); d.querySelector('.pv svg').removeAttribute('stroke');
-      thumbImg(d, it.url+'#t=0.1');   // poster frame (best-effort)
+      // A <video> (not <img>) can render a poster frame; H.264 shows a thumbnail, others just stay dark
+      // under the play badge. Either way the tile is clearly a video and clickable.
+      const v=document.createElement('video'); v.src=it.url+'#t=0.1'; v.muted=true; v.preload='metadata'; v.playsInline=true;
+      v.addEventListener('loadeddata',()=>{ d.classList.remove('loading'); },{once:true});
+      v.addEventListener('error',()=>{ d.classList.remove('loading'); },{once:true});
+      d.appendChild(v);
+      const pv=document.createElement('div'); pv.className='pv'; pv.innerHTML=svg('<path d="M8 5v14l11-7z"/>');
+      pv.querySelector('svg').setAttribute('fill','#fff'); pv.querySelector('svg').removeAttribute('stroke');
+      d.appendChild(pv);
     } else thumbImg(d, it.url);
     d.onclick=()=>pinManual(i);
     f.appendChild(d);
