@@ -13,11 +13,24 @@ disk does not get us there economically. This is the staged plan.
 | Audio `.aac` chunks | ~1.9 MB/min while recording — the bulk | Render disk `/data/media` | **Object storage** (S3/R2/B2) |
 | Photos / video | occasional, large | Render disk | **Object storage** |
 | `.jsonl` / `.vstream` sensor files | steady, small-ish | Render disk | Object storage (raw) |
-| Parsed `records` (jsonb) | 1.7M+ rows/trip | Postgres | Postgres (index only) — **not** the raw bytes |
+| Parsed `records` (jsonb) | 1.7M+ rows/trip | Postgres | Postgres (**selective** index only) — not the raw bytes |
 
 Key point: `records` is a *derived index* (dashboard queries), not the source of truth. The raw
 files on disk/object-store are canonical, so we can prune/rebuild the DB, and we must never let the
 DB grow unbounded with blob-like data.
+
+**Shipped:** ingest now only explodes the streams the dashboard actually reads — `location`, `gnss`,
+`wifi`, `motion_activity`, and any GPS-bearing record (env `INDEX_STREAMS`, `*` = legacy
+index-everything). The bulk streams (`events`, `audio_scene`, `device`, `cell`, `audiostate`…) are
+still written to disk in full but never hit Postgres, cutting new DB rows ~95%+. `sessions.record_count`
+still reflects true capture volume (all records are counted, just not all indexed). A one-off
+`delete from records where stream not in (...)` can reclaim the pre-existing 1.7M rows when convenient.
+
+**Managed Postgres note:** Render Postgres is a *separate managed instance* with its own storage — it
+**cannot** be pointed at the web service's mounted disk, and vice-versa. They are deliberately two
+systems: keep metadata + the lean index in Postgres, keep bytes on disk → object storage. Don't try to
+merge them (self-hosting Postgres on the disk to share storage means owning backups/HA/upgrades — not
+worth it).
 
 ## Stage 0 — right now (unblock the current trip)
 
