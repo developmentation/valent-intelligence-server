@@ -23,6 +23,9 @@ The single source of truth for what the server *is today*. (Forward-looking desi
     fresh tail per session (ring + TTL), merged into `/api/track`. Ephemeral by design.
   - `POST /ingest/live/photo` — a captured photo (raw bytes) stored immediately + `files` row +
     gallery broadcast. De-duped against the bulk copy by SHA.
+  - `POST /ingest/errors` — the app's universal crash/error catcher's sink: persisted uncaught crashes
+    + recent caught error/warn diagnostics, deduped on a client `fingerprint`. Read back via
+    `GET /admin/errors` to evaluate a device fault without adb. See ERROR-CATCHER.md.
 
 ## Endpoint reference
 | Method · Path | Auth | Purpose |
@@ -31,6 +34,8 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 | `POST /ingest` | Bearer INGEST_TOKEN | bulk batch (see above) |
 | `POST /ingest/live` | Bearer | live GPS fixes + scene |
 | `POST /ingest/live/photo` | Bearer | instant photo (X-Session/X-Filename/X-Stream headers) |
+| `POST /ingest/errors` | Bearer | device crash/error catcher upload (`{device, events[]}`, deduped on fingerprint) |
+| `GET /admin/errors?session=&level=&device=&since=&limit=&format=text` | Bearer | captured errors, newest first; `format=text` = compact dump |
 | `GET /admin/stats` | Bearer | corpus totals, per-kind/stream, sessions, recent batches |
 | `GET /admin/validate?session=` | Bearer | per-session acceptance check vs the phone manifest (see DATA-INTEGRITY) |
 | `POST /admin/apk` · `DELETE /admin/apk/:name` | Bearer | publish / prune APK builds |
@@ -57,6 +62,8 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 - `records` — **selective** index (only dashboard-queryable streams: location, gnss, wifi,
   motion_activity, audio_scene, media, speech, + any GPS-bearing) as `jsonb` with `ern`/`wall`.
 - `batches` — one row per received bulk batch (sha256 unique).
+- `errors` — device-reported crashes/errors: level/kind/component/message/where/stack/fields, `wall_ms`,
+  **fingerprint (unique → dedup)**. Fed by `/ingest/errors`, read by `/admin/errors`. See ERROR-CATCHER.md.
 - `schema_migrations` — applied migration ledger.
 
 The raw files on disk are canonical; `records` is a rebuildable index (keeps Postgres small).

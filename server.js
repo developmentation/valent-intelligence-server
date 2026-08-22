@@ -111,7 +111,72 @@ app.post('/ingest/live/photo', express.raw({ type: () => true, limit: '32mb' }),
   } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
 });
 
+// ---- error lane: the app's universal crash/error catcher uploads here (persisted crashes on launch
+// + recent error/warn diagnostics). Best-effort, deduped on fingerprint so a re-sent crash lands once.
+// Read back via GET /admin/errors to evaluate a fault on any device without adb. ----
+app.post('/ingest/errors', express.json({ limit: '4mb' }), async (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const b = req.body || {};
+  const device = String(b.device || '');
+  const build = String(b.build || '');
+  const events = Array.isArray(b.events) ? b.events : [];
+  if (!events.length) return res.json({ ok: true, stored: 0 });
+  let stored = 0;
+  try {
+    for (const e of events.slice(0, 500)) {
+      const wall = Number(e.wall) || 0;
+      const type = String(e.component || e.type || '');
+      const where = String(e.where || e.thread || e.component || '');
+      // Client fingerprint if given; else derive one so a re-send dedups. wall+type+where+msg-prefix.
+      const fp = String(e.fp || `${wall}|${type}|${where}|${String(e.message || e.msg || '').slice(0, 80)}`);
+      const r = await pool.query(
+        `insert into errors (fingerprint, session_id, device, build, level, kind, component, message, where_at, wall_ms, stack, fields)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         on conflict (fingerprint) do nothing returning id`,
+        [fp, e.session || b.session || null, e.device || device || null, e.build || build || null,
+         String(e.level || 'ERROR'), String(e.kind || 'event'), type || null,
+         String(e.message || e.msg || ''), where || null, wall,
+         e.stack || null, e.fields ? JSON.stringify(e.fields) : null]);
+      if (r.rowCount) stored++;
+    }
+    if (stored) sseBroadcast({ type: 'error', device, stored, at: Date.now() });
+    res.json({ ok: true, stored, seen: events.length });
+  } catch (e) { console.error('errors ingest', e); res.status(500).json({ ok: false, error: String(e.message || e) }); }
+});
+
 // ---- diagnostics (token-gated, no login) ----
+// The captured errors, newest first. Filters: ?session= ?level=FATAL|ERROR|WARN ?device= ?since=<ms>
+// ?limit= (default 100). ?format=text returns a compact, LLM/human-readable dump instead of JSON.
+app.get('/admin/errors', async (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  try {
+    const where = []; const args = [];
+    const add = (sql, v) => { args.push(v); where.push(sql.replace('?', '$' + args.length)); };
+    if (req.query.session) add('session_id = ?', String(req.query.session));
+    if (req.query.level) add('upper(level) = upper(?)', String(req.query.level));
+    if (req.query.device) add('device ilike ?', '%' + String(req.query.device) + '%');
+    if (req.query.since) add('wall_ms >= ?', Number(req.query.since) || 0);
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+    const sql = `select id, fingerprint, session_id, device, build, level, kind, component, message, where_at, wall_ms, stack, fields, received_at
+                 from errors ${where.length ? 'where ' + where.join(' and ') : ''}
+                 order by received_at desc limit ${limit}`;
+    const rows = (await pool.query(sql, args)).rows;
+    if (String(req.query.format) === 'text') {
+      const lines = rows.map((r) => {
+        const t = new Date(Number(r.wall_ms) || Date.parse(r.received_at)).toISOString();
+        const head = `[${t}] ${r.level}/${r.kind} ${r.component || ''} — ${r.message || ''}`;
+        const meta = `    device=${r.device || '?'} build=${r.build || '?'} session=${r.session_id || '-'} where=${r.where_at || '-'}`;
+        const flds = r.fields ? `    fields=${JSON.stringify(r.fields)}` : '';
+        const stk = r.stack ? '    ' + String(r.stack).trim().split('\n').slice(0, 24).join('\n    ') : '';
+        return [head, meta, flds, stk].filter(Boolean).join('\n');
+      });
+      res.type('text/plain').send(`# ${rows.length} error(s), newest first\n\n` + lines.join('\n\n') + '\n');
+    } else {
+      res.json({ count: rows.length, errors: rows });
+    }
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
 app.get('/admin/stats', async (req, res) => {
   if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
   try {
