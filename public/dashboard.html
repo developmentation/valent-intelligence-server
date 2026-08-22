@@ -288,12 +288,21 @@ function initPlayer(sess){
   const aud=$('#aud'); const url='/api/audio/hls?session='+encodeURIComponent(sess);
   if(window.Hls && Hls.isSupported()){
     if(hls){ hls.destroy(); hls=null; }
-    hls=new Hls({ enableWorker:true, liveSyncDurationCount:3, maxBufferLength:120 });
-    hls.on(Hls.Events.ERROR,(e,d)=>{ if(d&&d.fatal){
-      if(d.type===Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-      else if(d.type===Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-    }});
-    hls.loadSource(url); hls.attachMedia(aud);
+    hls=new Hls({
+      enableWorker:true, maxBufferLength:120, maxMaxBufferLength:600,
+      xhrSetup:(xhr)=>{ xhr.withCredentials=true; },   // send the auth cookie to /media segments
+    });
+    hls.on(Hls.Events.ERROR,(e,d)=>{
+      console.error('hls error', d && d.type, d && d.details, d);
+      $('#playmeta').textContent = 'audio: '+((d&&d.details)||'error')+((d&&d.fatal)?' (fatal)':'');
+      if(d && d.fatal){
+        if(d.type===Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+        else if(d.type===Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        else { hls.destroy(); hls=null; playerSession=null; }
+      }
+    });
+    hls.attachMedia(aud);
+    hls.on(Hls.Events.MEDIA_ATTACHED, ()=>{ hls.loadSource(url); });   // attach → then load (recommended order)
   } else if(aud.canPlayType('application/vnd.apple.mpegurl')){
     aud.src=url;   // Safari: native HLS
   }
