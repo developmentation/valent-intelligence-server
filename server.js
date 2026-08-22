@@ -474,6 +474,18 @@ app.get('/api/streams', requireAdmin, async (req, res) => {
   })));
 });
 
+// Ordered audio clips for the streaming player (the .aac chunks; .anchors sidecars are kind='binary').
+app.get('/api/audio', requireAdmin, async (req, res) => {
+  const s = req.query.session; const args = [];
+  let where = `stream='audio' and kind='audio'`;
+  if (s) { args.push(s); where += ` and session_id=$1`; }
+  const q = await pool.query(
+    `select session_id, filename, path, bytes from files where ${where} order by filename asc limit 5000`, args);
+  res.json(q.rows.map((r) => ({
+    session: r.session_id, filename: r.filename, url: storage.publicUrl(r.path), bytes: Number(r.bytes || 0),
+  })));
+});
+
 app.get('/api/gallery', requireAdmin, async (req, res) => {
   const s = req.query.session;
   const args = [];

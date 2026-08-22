@@ -42,6 +42,10 @@
   .stag.cur{border-color:var(--violet);color:var(--ink)}
   .tbody{padding:12px 14px;max-height:240px;overflow:auto;font-size:14px;line-height:1.65;color:var(--ink)}
   .tbody .seg{color:var(--mut)}.tbody .seg.last{color:var(--ink)}
+  .playerbar{padding:11px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .playerbar button{background:var(--violet);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  .playerbar button#playfrom{background:var(--card);border:1px solid var(--line);color:var(--ink);font-weight:400}
+  .playerbar #playstatus{font-size:12px;color:var(--mut);font-family:ui-monospace,Menlo,monospace}
   .grid{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:10px 18px 24px}
   @media(max-width:900px){.grid{grid-template-columns:1fr}}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
@@ -88,6 +92,16 @@
 <div class="scenestrip" id="scenestrip"></div>
 <div class="feed" id="feed"><div class="row">Waiting for the live stream…</div></div>
 
+<div class="panel" id="playerwrap" style="margin:10px 18px 0;display:none">
+  <h2><span>🎧 Listen</span><span id="playmeta"></span></h2>
+  <div class="playerbar">
+    <button id="playbtn">▶ Listen live</button>
+    <button id="playfrom" title="Play from the start">⏮ From start</button>
+    <span id="playstatus"></span>
+    <audio id="aud"></audio><audio id="audnext" style="display:none"></audio>
+  </div>
+</div>
+
 <div class="panel tpanel" id="tpanelwrap" style="margin:10px 18px 0;display:none"><h2><span>🗣 Transcript</span><span id="tmeta"></span></h2><div class="tbody" id="transcript"></div></div>
 
 <div class="panel strwrap"><h2><span>Streams — everything captured</span><span id="strmeta"></span></h2><div class="strgrid" id="streams"></div></div>
@@ -123,6 +137,7 @@ function fmtAgo(ms){ if(!ms) return '—'; const s=(Date.now()-ms)/1000;
   if(s<90) return Math.round(s)+'s ago'; if(s<5400) return Math.round(s/60)+'m ago';
   if(s<172800) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
 
+let firstLoad = true;
 async function loadSessions(){
   const r = await fetch('/api/sessions'); const rows = await r.json();
   const sel = $('#session'); const cur = sel.value;
@@ -130,7 +145,10 @@ async function loadSessions(){
     const d = s.last_wall ? new Date(Number(s.last_wall)).toLocaleString() : s.id;
     return `<option value="${s.id}">${s.id} · ${s.device||''} · ${d}</option>`;
   }).join('');
-  sel.value = cur;
+  // Default to the currently-live (newest) session on first load, so the view is scoped + filtered
+  // to it immediately rather than showing an "All sessions" blend. rows[0] is newest (last_wall desc).
+  if(firstLoad && !cur && rows.length){ sel.value = rows[0].id; firstLoad = false; }
+  else sel.value = cur;
 }
 function setChip(el, val){ if(el && el.textContent !== String(val)){ el.textContent = val; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } }
 async function loadStatus(){
@@ -251,7 +269,42 @@ function renderLb(){
 document.addEventListener('keydown', e=>{ if(!$('#lightbox').classList.contains('open')) return;
   if(e.key==='Escape') closeLb(); else if(e.key==='ArrowLeft') navLb(-1); else if(e.key==='ArrowRight') navLb(1); });
 $('#lightbox') && $('#lightbox').addEventListener('click', e=>{ if(e.target.id==='lightbox') closeLb(); });
-async function refresh(){ await Promise.all([loadStatus(), loadScene(), loadTranscript(), loadStreams(), loadTrack(), loadGallery()]); }
+// ---- streaming audio player: sequential clips, auto-advance, "listen live" follows new chunks ----
+let audioList=[], ai=-1, playing=false, following=false;
+async function loadAudioList(){
+  const sess=$('#session').value;
+  const list=await (await fetch('/api/audio'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
+  audioList = Array.isArray(list)?list:[];
+  $('#playerwrap').style.display = audioList.length ? '' : 'none';
+  $('#playmeta').textContent = audioList.length ? audioList.length+' clips' : '';
+}
+function playAt(i){
+  if(i<0||i>=audioList.length) return;
+  ai=i; const aud=$('#aud'); aud.src=audioList[i].url; aud.play().catch(()=>{}); playing=true;
+  const n=ai+1; if(n<audioList.length) $('#audnext').src=audioList[n].url;  // preload next for a tight join
+  updatePlay();
+}
+function updatePlay(){
+  $('#playbtn').textContent = playing ? '⏸ Pause' : (following ? '▶ Listen live' : '▶ Play');
+  $('#playstatus').textContent = ai<0 ? '' : `clip ${ai+1}/${audioList.length}${following?' · following live':''}`;
+}
+function wirePlayer(){
+  $('#aud').addEventListener('ended', ()=>{
+    if(ai+1<audioList.length) playAt(ai+1);
+    else { playing=false; updatePlay(); }   // at the live edge — wait; SSE resumes when the next lands
+  });
+  $('#playbtn').addEventListener('click', ()=>{
+    const aud=$('#aud');
+    if(playing){ aud.pause(); playing=false; updatePlay(); return; }
+    if(ai<0 || following){ following=true; if(audioList.length) playAt(audioList.length-1); }  // jump to newest
+    else { aud.play(); playing=true; updatePlay(); }
+  });
+  $('#playfrom').addEventListener('click', ()=>{ following=false; if(audioList.length) playAt(0); });
+}
+function onNewAudio(){ // called on SSE ingest: keep following live seamlessly
+  loadAudioList().then(()=>{ if(following && !playing && ai+1<audioList.length) playAt(ai+1); });
+}
+async function refresh(){ await Promise.all([loadStatus(), loadScene(), loadTranscript(), loadStreams(), loadTrack(), loadGallery(), loadAudioList()]); }
 
 // ---- live status indicator ----
 function setLive(state){
@@ -290,7 +343,7 @@ function connectStream(){
     const sel=$('#session').value; const forUs = !sel || sel===ev.session;
     if(ev.type==='ingest'){
       evCount++; lastEventMs=Date.now(); setLive('streaming'); pushFeed(ev);
-      if(forUs) scheduleRefresh();
+      if(forUs){ scheduleRefresh(); onNewAudio(); }   // keep the player following live
     } else if(ev.type==='live'){
       lastEventMs=Date.now(); setLive('streaming');
       if(forUs) scheduleLiveRefresh();          // fast: just the map head + scene
@@ -302,6 +355,7 @@ function connectStream(){
 }
 
 initMap();
+wirePlayer();
 loadSessions().then(refresh).then(connectStream);
 $('#session').addEventListener('change', refresh);
 // Slow safety-net polling in case SSE is blocked by a proxy; SSE is the primary path.
