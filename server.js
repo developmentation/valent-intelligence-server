@@ -58,6 +58,87 @@ app.get('/admin/stats', async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
+// Deep end-to-end validation of one session: full upload (chunk-index contiguity, no gaps),
+// DB<->storage consistency (every file actually on disk), indexing (queryable streams have records),
+// and capture close. Reusable acceptance check for the phone->server->index pipeline.
+app.get('/admin/validate', async (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const sid = String(req.query.session || '');
+  if (!sid) return res.status(400).json({ error: 'session required' });
+  try {
+    const session = (await pool.query('select * from sessions where id=$1', [sid])).rows[0];
+    if (!session) return res.status(404).json({ error: 'no such session' });
+    const files = (await pool.query(
+      'select stream, filename, path, bytes, kind from files where session_id=$1 order by stream, filename', [sid])).rows;
+
+    // Per-stream chunk analysis + disk existence. Chunk index is the trailing _NNNNNN in the filename.
+    const idxRe = /_(\d+)\.[^.]+$/;
+    const byStream = {};
+    let onDisk = 0; const missingDisk = [];
+    for (const f of files) {
+      const s = (byStream[f.stream] || (byStream[f.stream] = { count: 0, indices: [], bytes: 0, kind: f.kind }));
+      s.count++; s.bytes += Number(f.bytes || 0);
+      const m = idxRe.exec(f.filename); if (m) s.indices.push(parseInt(m[1], 10));
+      if (await storage.exists(f.path)) onDisk++; else missingDisk.push(f.path);
+    }
+    const streams = Object.entries(byStream).map(([stream, s]) => {
+      const idx = s.indices.slice().sort((a, b) => a - b);
+      const min = idx.length ? idx[0] : null;
+      const max = idx.length ? idx[idx.length - 1] : null;
+      const present = new Set(idx);
+      const gaps = [];
+      if (min != null) for (let i = min; i <= max; i++) if (!present.has(i)) gaps.push(i);
+      return {
+        stream, kind: s.kind, files: s.count, bytes: s.bytes,
+        minIdx: min, maxIdx: max, expectedChunks: min != null ? max - min + 1 : s.count,
+        gapCount: gaps.length, gapsSample: gaps.slice(0, 50), contiguous: gaps.length === 0,
+      };
+    }).sort((a, b) => b.bytes - a.bytes);
+
+    // Indexing: records actually landed for the queryable streams.
+    const recRows = (await pool.query(
+      'select stream, count(*)::int n from records where session_id=$1 group by stream', [sid])).rows;
+    const indexed = {}; recRows.forEach((r) => { indexed[r.stream] = r.n; });
+
+    // Manifest present + best-effort capture-close detection from the raw manifest.
+    const manifestKey = `${sid}/manifest.jsonl`;
+    const manifestPresent = await storage.exists(manifestKey);
+    let closedDetected = null;
+    if (manifestPresent) {
+      try {
+        const txt = (await storage.get(manifestKey)).toString('utf8');
+        closedDetected = /session_?close|"closed"\s*:\s*true|"ended?"\s*:\s*true/i.test(txt);
+      } catch (_) { /* leave null */ }
+    }
+
+    const totalGaps = streams.reduce((a, s) => a + s.gapCount, 0);
+    const dbVsScan = files.length === session.file_count;
+    const complete = totalGaps === 0 && missingDisk.length === 0 && manifestPresent && dbVsScan;
+    res.json({
+      session: sid, device: session.device,
+      clock: {
+        firstWall: Number(session.first_wall), lastWall: Number(session.last_wall),
+        durationMin: (session.first_wall && session.last_wall)
+          ? Math.round((Number(session.last_wall) - Number(session.first_wall)) / 60000) : null,
+      },
+      totals: {
+        filesScanned: files.length, dbFileCount: session.file_count, dbVsScanMatch: dbVsScan,
+        bytes: Number(session.bytes), records: Number(session.record_count),
+      },
+      upload: { filesOnDisk: onDisk, filesMissingOnDisk: missingDisk.length, missingSample: missingDisk.slice(0, 20), totalChunkGaps: totalGaps },
+      manifestPresent, closedDetected,
+      streams: streams.map((s) => ({ ...s, indexedRecords: indexed[s.stream] || 0 })),
+      verdict: complete ? 'COMPLETE' : 'INCOMPLETE',
+      reasons: [
+        totalGaps ? `${totalGaps} missing chunk(s)` : null,
+        missingDisk.length ? `${missingDisk.length} file(s) not on disk` : null,
+        !manifestPresent ? 'manifest missing' : null,
+        !dbVsScan ? `file_count mismatch (db ${session.file_count} vs scan ${files.length})` : null,
+      ].filter(Boolean),
+    });
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
 // ---- admin auth ----
 app.use(session({
   secret: process.env.SESSION_SECRET || crypto.randomBytes(24).toString('hex'),
