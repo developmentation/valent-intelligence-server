@@ -394,26 +394,35 @@ function showItem(idx,{fade=true}={}){
   if(showingCurrent){ state.pinnedLoc=null; const l=state.lastStatus&&state.lastStatus.location; if(l) setLocDisplay(l.lat,l.lon,l.acc); }
   else { const L2=locForTime(new Date(it.received_at).getTime()); if(L2){ state.pinnedLoc={lat:L2.lat,lon:L2.lon}; setLocDisplay(L2.lat,L2.lon,L2.acc); } }
   back.innerHTML=''; curVideo=null;
-  const done=()=>{ back.classList.add('on'); front.classList.remove('on'); [front,back]=[back,front]; };
+  // Reveal the freshly-built BACK layer exactly ONCE. (The old code could call this twice — e.g. a
+  // load event AND a timeout — and each call swapped the layers, so the second flipped the PREVIOUS
+  // media back into view. That was the "it plays the old image/video" glitch.)
+  let swapped=false;
+  const done=()=>{ if(swapped) return; swapped=true; stageLoading(false); back.classList.add('on'); front.classList.remove('on'); [front,back]=[back,front]; };
   if(it.type==='video'){
+    $('#unmute').classList.remove('show');
     const v=document.createElement('video'); v.className='fg'; v.src=it.url;
-    v.muted=state.muted; v.autoplay=true; v.playsInline=true; v.controls=true; v.loop=(state.mode!=='replay');
+    // No autoplay/loop on the live stage: a large, non-faststart phone MP4 played before it's buffered
+    // (esp. over mobile) renders as macroblock "squares". Show controls; reveal the first frame when we
+    // have it and try a muted play, but tolerate failure — the viewer can tap play, and we NEVER revert.
+    v.muted=true; v.playsInline=true; v.controls=true; v.preload='auto';
     v.setAttribute('playsinline',''); curVideo=v;
-    $('#unmute').classList.toggle('show', state.muted);
-    v.addEventListener('loadeddata',()=>{ done(); v.play().catch(()=>{}); },{once:true});
+    v.addEventListener('loadeddata',()=>{ done(); },{once:true});          // reveal the first frame ASAP
+    v.addEventListener('canplay',()=>{ v.play().catch(()=>{}); },{once:true}); // only start once buffered
+    v.addEventListener('error',()=>{ done(); },{once:true});   // show the element (poster/controls), don't flip back
     v.addEventListener('ended',()=>{ if(state.mode==='replay') stepReplay(); });
     const bg=document.createElement('div'); bg.className='bg'; bg.style.background='#000';
     back.append(bg,v);
-    setTimeout(()=>{ if(!back.classList.contains('on')) done(); },2500); // fallback if it stalls
+    setTimeout(done, 5000);   // guarded: if metadata is slow, reveal once; can never double-swap now
   }else{
     $('#unmute').classList.remove('show'); stageLoading(true);
     const im=new Image(); im.className='fg'; im.decoding='async';
     const bg=document.createElement('img'); bg.className='bg';
     let tries=0;
-    im.onload=()=>{ stageLoading(false); done(); };
+    im.onload=done;
     // Flaky wifi/cell: retry a few times with a cache-busting param before giving up (keeps the strip
     // box, doesn't wedge the stage black).
-    im.onerror=()=>{ if(tries++<3){ setTimeout(()=>{ const u=it.url+(it.url.includes('?')?'&':'?')+'r='+tries+'_'+Date.now(); bg.src=u; im.src=u; }, 2500); } else { stageLoading(false); done(); } };
+    im.onerror=()=>{ if(tries++<3){ setTimeout(()=>{ const u=it.url+(it.url.includes('?')?'&':'?')+'r='+tries+'_'+Date.now(); bg.src=u; im.src=u; }, 2500); } else { done(); } };
     bg.src=it.url; im.src=it.url;
     back.append(bg,im);
   }
