@@ -603,7 +603,9 @@ const CHUNK_SECONDS = 60;   // audio chunk length; HLS segment duration + clip-c
 // Ordered audio clips (metadata) for the player UI.
 app.get('/api/audio', requireAdmin, async (req, res) => {
   const s = req.query.session; const args = [];
-  let where = `stream='audio' and kind='audio'`;
+  // Only the .aac chunks are playable audio; the .anchors sidecars share the chunk index (timing
+  // anchors, not audio) — counting them doubled the reported duration and would break the player.
+  let where = `stream='audio' and kind='audio' and filename like '%.aac'`;
   if (s) { args.push(s); where += ` and session_id=$1`; }
   const q = await pool.query(
     `select session_id, filename, path, bytes from files where ${where} order by filename asc limit 5000`, args);
@@ -619,7 +621,7 @@ app.get('/api/audio/hls', requireAdmin, async (req, res) => {
   const s = req.query.session;
   if (!s) return res.status(400).send('session required');
   const rows = (await pool.query(
-    `select filename, path from files where session_id=$1 and stream='audio' and kind='audio' order by filename asc`, [s])).rows;
+    `select filename, path from files where session_id=$1 and stream='audio' and kind='audio' and filename like '%.aac' order by filename asc`, [s])).rows;
   if (!rows.length) return res.status(404).send('no audio');
   const live = Number((await pool.query(
     `select count(*) filter (where received_at > now() - interval '3 minutes') recent from batches where session_id=$1`, [s])).rows[0].recent || 0) > 0;
