@@ -29,6 +29,13 @@
   .feed{margin:6px 18px 0;height:26px;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--mut);white-space:nowrap}
   .feed .row{line-height:26px}
   .feed .add{color:var(--violet)}
+  .audiobar{margin:8px 18px 0;display:flex;gap:10px;flex-wrap:wrap}
+  .abchip{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 13px;display:flex;align-items:center;gap:9px;max-width:100%}
+  .abchip .ic{font-size:17px;flex:none}
+  .abchip .k{font-size:9px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+  .abchip .v{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:66vw}
+  .abchip.playing{border-color:var(--good)}
+  .abchip.hearing{border-color:var(--violet)}
   .grid{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:10px 18px 24px}
   @media(max-width:900px){.grid{grid-template-columns:1fr}}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
@@ -71,6 +78,7 @@
 </header>
 
 <div class="status" id="status"></div>
+<div class="audiobar" id="audiobar"></div>
 <div class="feed" id="feed"><div class="row">Waiting for the live stream…</div></div>
 
 <div class="panel strwrap"><h2><span>Streams — everything captured</span><span id="strmeta"></span></h2><div class="strgrid" id="streams"></div></div>
@@ -127,6 +135,15 @@ async function loadStatus(){
     ['Records', Number(t.records||0).toLocaleString(), null],
   ];
   $('#status').innerHTML = chips.map(([k,v,w])=>`<div class="chip"><div class="k">${k}</div><div class="v">${v}</div>${w?`<div class="k" style="margin-top:3px">${fmtAgo(w)}</div>`:''}</div>`).join('');
+  // Live audio banner: what's being heard, what's playing, and the latest transcript.
+  const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const ab=[];
+  if(s.scene) ab.push(`<div class="abchip hearing"><span class="ic">🔊</span><div><div class="k">Now hearing · ${fmtAgo(s.scene.wall)}</div><div class="v">${esc(s.scene.label)} · ${Math.round((s.scene.score||0)*100)}%</div></div></div>`);
+  if(s.nowPlaying){ const np=s.nowPlaying; const t=[np.title,np.artist].filter(Boolean).map(esc).join(' — ');
+    const app=np.app?np.app.split('.').pop():''; const playing=(np.state===3||np.state==='playing');
+    ab.push(`<div class="abchip${playing?' playing':''}"><span class="ic">🎵</span><div><div class="k">Now playing${app?' · '+esc(app):''}</div><div class="v">${t||'—'}</div></div></div>`); }
+  if(s.speech) ab.push(`<div class="abchip"><span class="ic">💬</span><div><div class="k">Transcript · ${fmtAgo(s.speech.wall)}</div><div class="v">${esc(s.speech.text)}</div></div></div>`);
+  $('#audiobar').innerHTML = ab.join('');
 }
 function kmBetween(a,b){ const R=6371,d2r=Math.PI/180;
   const dLat=(b.lat-a.lat)*d2r, dLon=(b.lon-a.lon)*d2r, la=a.lat*d2r, lb=b.lat*d2r;

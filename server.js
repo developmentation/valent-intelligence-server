@@ -390,8 +390,11 @@ app.get('/api/status', requireAdmin, async (_req, res) => {
   // counts live only on the sky record, so fetch the latest of THOSE, not just the latest gnss row.
   const latestSky = async () => (await pool.query(
     `select data, wall from records where stream='gnss' and data->>'kind'='sky' order by wall desc nulls last limit 1`)).rows[0] || null;
-  const [activity, loc, wifi, gnss] = await Promise.all([
+  const latestWith = async (stream, field) => (await pool.query(
+    `select data, wall from records where stream=$1 and data ? $2 order by wall desc limit 1`, [stream, field])).rows[0] || null;
+  const [activity, loc, wifi, gnss, scene, media, speech] = await Promise.all([
     latest('motion_activity'), latest('location'), latest('wifi'), latestSky(),
+    latestWith('audio_scene', 'tags'), latestWith('media', 'package'), latestWith('speech', 'text'),
   ]);
   const totals = (await pool.query(
     `select (select count(*) from sessions) sessions,
@@ -403,6 +406,13 @@ app.get('/api/status', requireAdmin, async (_req, res) => {
     location: loc && { lat: loc.data.lat, lon: loc.data.lon, acc: loc.data.acc, wall: Number(loc.wall) },
     wifi: wifi && { count: wifi.data.count, wall: Number(wifi.wall) },
     gnss: gnss ? { used: gnss.data.usedInFix, inView: gnss.data.inView, wall: Number(gnss.wall) } : null,
+    scene: (scene && Array.isArray(scene.data.tags) && scene.data.tags[0])
+      ? { label: scene.data.tags[0].label, score: scene.data.tags[0].score, wall: Number(scene.wall) } : null,
+    nowPlaying: (media && (media.data.title || media.data.artist))
+      ? { title: media.data.title || null, artist: media.data.artist || null, album: media.data.album || null,
+          app: media.data.package || null, state: media.data.state || null, wall: Number(media.wall) } : null,
+    speech: (speech && speech.data.text)
+      ? { text: speech.data.text, wall: Number(speech.wall) } : null,
     totals,
   });
 });
