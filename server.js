@@ -327,13 +327,22 @@ app.get('/api/track', requireAdmin, async (req, res) => {
   const args = [];
   let where = `stream='location'`;
   if (s) { args.push(s); where += ` and session_id=$1`; }
+  // Level-of-detail: decimate to ~perSession points PER session (keeping first + last so no journey
+  // vanishes and endpoints stay put). A single ordered scan; the map gets a smooth line without
+  // shipping tens of thousands of points. (Persisted multi-tier rollups can replace this at huge scale.)
+  const perSession = Math.min(6000, Math.max(300, parseInt(req.query.max, 10) || (s ? 4000 : 1200)));
   const q = await pool.query(
-    `select session_id, wall,
-            (data->>'lat')::float8 as lat, (data->>'lon')::float8 as lon,
-            (data->>'acc')::float8 as acc, (data->>'speed')::float8 as speed,
-            (data->>'suspect') as suspect
-     from records where ${where} and data ? 'lat'
-     order by session_id, wall asc limit 50000`, args);   // grouped by session so the client draws one line per journey
+    `with pts as (
+       select session_id, wall,
+              (data->>'lat')::float8 lat, (data->>'lon')::float8 lon,
+              (data->>'acc')::float8 acc, (data->>'speed')::float8 speed, (data->>'suspect') suspect,
+              row_number() over (partition by session_id order by wall) rn,
+              count(*)     over (partition by session_id) cnt
+       from records where ${where} and data ? 'lat'
+     )
+     select session_id, wall, lat, lon, acc, speed, suspect from pts
+     where rn = 1 or rn = cnt or rn % greatest(1, (cnt / ${perSession})::int) = 0
+     order by session_id, wall`, args);
   res.json(q.rows.filter(r => r.lat != null && r.lon != null));
 });
 
@@ -377,8 +386,12 @@ app.get('/api/gallery', requireAdmin, async (req, res) => {
 app.get('/api/status', requireAdmin, async (_req, res) => {
   const latest = async (stream) => (await pool.query(
     `select data, wall from records where stream=$1 order by wall desc nulls last limit 1`, [stream])).rows[0] || null;
+  // gnss writes frequent kind:"epoch" measurements + occasional kind:"sky" status; the satellite
+  // counts live only on the sky record, so fetch the latest of THOSE, not just the latest gnss row.
+  const latestSky = async () => (await pool.query(
+    `select data, wall from records where stream='gnss' and data->>'kind'='sky' order by wall desc nulls last limit 1`)).rows[0] || null;
   const [activity, loc, wifi, gnss] = await Promise.all([
-    latest('motion_activity'), latest('location'), latest('wifi'), latest('gnss'),
+    latest('motion_activity'), latest('location'), latest('wifi'), latestSky(),
   ]);
   const totals = (await pool.query(
     `select (select count(*) from sessions) sessions,
@@ -389,7 +402,7 @@ app.get('/api/status', requireAdmin, async (_req, res) => {
     activity: activity && { label: activity.data.label, engine: activity.data.engine, wall: Number(activity.wall) },
     location: loc && { lat: loc.data.lat, lon: loc.data.lon, acc: loc.data.acc, wall: Number(loc.wall) },
     wifi: wifi && { count: wifi.data.count, wall: Number(wifi.wall) },
-    gnss: gnss && gnss.data.kind === 'sky' ? { used: gnss.data.usedInFix, inView: gnss.data.inView, wall: Number(gnss.wall) } : null,
+    gnss: gnss ? { used: gnss.data.usedInFix, inView: gnss.data.inView, wall: Number(gnss.wall) } : null,
     totals,
   });
 });

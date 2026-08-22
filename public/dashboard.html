@@ -49,6 +49,14 @@
   .sval{font-size:13px;color:var(--violet);font-family:ui-monospace,Menlo,monospace;margin-top:2px}
   .sago{font-size:9px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
   .leaflet-container{background:#111}
+  .gallery figure{cursor:pointer}
+  .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.93);display:none;align-items:center;justify-content:center;z-index:1000}
+  .lightbox.open{display:flex}
+  .lightbox img,.lightbox video{max-width:92vw;max-height:82vh;border-radius:8px;background:#000}
+  .lb-cap{position:absolute;bottom:16px;left:0;right:0;text-align:center;color:#ccc;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:0 10px}
+  .lb-nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(20,20,20,.7);color:#fff;border:1px solid var(--line);width:46px;height:64px;font-size:24px;cursor:pointer;border-radius:10px}
+  .lb-nav.prev{left:14px}.lb-nav.next{right:14px}
+  .lb-close{position:absolute;top:14px;right:16px;color:#fff;font-size:24px;cursor:pointer;background:rgba(20,20,20,.7);border:1px solid var(--line);border-radius:8px;width:40px;height:40px}
 </style>
 </head>
 <body>
@@ -70,6 +78,14 @@
 <div class="grid">
   <div class="panel"><h2><span>Where — de-noised GPS track</span><span id="mapmeta"></span></h2><div id="map"></div></div>
   <div class="panel"><h2><span>Gallery</span><span id="galmeta"></span></h2><div class="gallery" id="gallery"></div></div>
+</div>
+
+<div id="lightbox" class="lightbox">
+  <button class="lb-close" onclick="closeLb()">✕</button>
+  <button class="lb-nav prev" onclick="navLb(-1)">‹</button>
+  <div id="lbcontent"></div>
+  <button class="lb-nav next" onclick="navLb(1)">›</button>
+  <div class="lb-cap" id="lbcap"></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -157,20 +173,37 @@ async function loadStreams(){
   }).join('');
   rows.forEach(r=>strState[r.stream]={records:r.records,files:r.files});
 }
+let galleryItems=[], lbIdx=0;
 async function loadGallery(){
   const sess = $('#session').value;
   const items = await (await fetch('/api/gallery'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
+  galleryItems = items;
   const g = $('#gallery');
   $('#galmeta').textContent = items.length ? items.length+' items' : '';
   if(!items.length){ g.innerHTML='<div class="empty">No photos or video yet.</div>'; knownGallery=new Set(); return; }
-  g.innerHTML = items.map(it=>{
+  g.innerHTML = items.map((it,i)=>{
     const fresh = knownGallery.size && !knownGallery.has(it.url) ? ' fresh' : '';
-    return it.type==='video'
-      ? `<figure class="fig${fresh}"><video src="${it.url}" muted preload="metadata" onclick="this.paused?this.play():this.pause()"></video><span class="pv">▶</span></figure>`
-      : `<figure class="fig${fresh}"><a href="${it.url}" target="_blank"><img loading="lazy" src="${it.url}"></a></figure>`;
+    const inner = it.type==='video'
+      ? `<video src="${it.url}" muted preload="metadata"></video><span class="pv">▶</span>`
+      : `<img loading="lazy" src="${it.url}">`;
+    return `<figure class="fig${fresh}" onclick="openLb(${i})">${inner}</figure>`;
   }).join('');
   knownGallery = new Set(items.map(it=>it.url));
 }
+function openLb(i){ lbIdx=i; renderLb(); $('#lightbox').classList.add('open'); }
+function closeLb(){ $('#lightbox').classList.remove('open'); $('#lbcontent').innerHTML=''; }
+function navLb(d){ if(!galleryItems.length) return; lbIdx=(lbIdx+d+galleryItems.length)%galleryItems.length; renderLb(); }
+function renderLb(){
+  const it=galleryItems[lbIdx]; if(!it) return;
+  $('#lbcontent').innerHTML = it.type==='video'
+    ? `<video src="${it.url}" controls autoplay></video>`
+    : `<img src="${it.url}">`;
+  const when = it.received_at ? new Date(it.received_at).toLocaleString() : '';
+  $('#lbcap').textContent = `${it.session_id} · ${it.filename}${when?' · '+when:''}   (${lbIdx+1}/${galleryItems.length})`;
+}
+document.addEventListener('keydown', e=>{ if(!$('#lightbox').classList.contains('open')) return;
+  if(e.key==='Escape') closeLb(); else if(e.key==='ArrowLeft') navLb(-1); else if(e.key==='ArrowRight') navLb(1); });
+$('#lightbox') && $('#lightbox').addEventListener('click', e=>{ if(e.target.id==='lightbox') closeLb(); });
 async function refresh(){ await Promise.all([loadStatus(), loadStreams(), loadTrack(), loadGallery()]); }
 
 // ---- live status indicator ----
