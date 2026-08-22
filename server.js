@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const QRCode = require('qrcode');
 const { pool, init } = require('./db');
 const { handleIngest, MEDIA_ROOT } = require('./ingest');
+const storage = require('./storage');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -145,13 +146,54 @@ app.get('/api/status', requireAdmin, async (_req, res) => {
   });
 });
 
+// ---- per-session streams manifest (the visualizer's entry point) ----
+// One call returns the session clock, every stream with its real time-span + size, and the media
+// items with playable URLs. The client loads this once, then streams windows per stream/LOD.
+app.get('/api/manifest', requireAdmin, async (req, res) => {
+  const sid = String(req.query.session || '');
+  if (!sid) return res.status(400).json({ error: 'session required' });
+  const session = (await pool.query('select id, device, first_wall, last_wall from sessions where id=$1', [sid])).rows[0];
+  if (!session) return res.status(404).json({ error: 'no such session' });
+  let streams = (await pool.query(
+    `select stream, kind, first_wall, last_wall, file_count, record_count, bytes
+     from streams where session_id=$1 order by stream`, [sid])).rows.map((s) => ({
+    key: s.stream,
+    kind: s.kind,
+    range: [s.first_wall == null ? null : Number(s.first_wall), s.last_wall == null ? null : Number(s.last_wall)],
+    files: s.file_count,
+    records: Number(s.record_count || 0),
+    bytes: Number(s.bytes || 0),
+  }));
+  // Fallback for sessions ingested before the streams catalog existed: derive from the files table.
+  if (streams.length === 0) {
+    streams = (await pool.query(
+      `select stream, min(kind) kind, count(*)::int files, coalesce(sum(bytes),0)::bigint bytes
+       from files where session_id=$1 group by stream order by stream`, [sid])).rows.map((x) => ({
+      key: x.stream, kind: x.kind, range: [null, null], files: x.files, records: 0, bytes: Number(x.bytes || 0),
+    }));
+  }
+  const media = (await pool.query(
+    `select stream, filename, path, kind, bytes from files
+     where session_id=$1 and kind in ('media','audio') order by filename`, [sid])).rows.map((f) => ({
+    stream: f.stream, filename: f.filename, kind: f.kind, bytes: Number(f.bytes || 0),
+    url: storage.publicUrl(f.path),
+    type: /\.(mp4|mov|webm|mkv)$/i.test(f.filename) ? 'video' : (f.kind === 'audio' ? 'audio' : 'image'),
+  }));
+  res.json({
+    session: session.id,
+    device: session.device,
+    clock: { firstWall: session.first_wall == null ? null : Number(session.first_wall), lastWall: session.last_wall == null ? null : Number(session.last_wall) },
+    streams,
+    media,
+  });
+});
+
 // ---- media serving (admin only) ----
+// Goes through the storage seam: disk today (sendFile), a presigned/CDN redirect once S3/R2 is wired.
 app.get('/media/*', requireAdmin, (req, res) => {
   const rel = decodeURIComponent(req.params[0] || '');
   if (rel.includes('..')) return res.status(400).end();
-  const abs = path.join(MEDIA_ROOT, rel);
-  if (!abs.startsWith(MEDIA_ROOT)) return res.status(400).end();
-  res.sendFile(abs, (err) => { if (err) res.status(404).end(); });
+  try { storage.serve(res, rel); } catch (_) { res.status(400).end(); }
 });
 
 // ---- APK distribution (remote updates without a cable) ----

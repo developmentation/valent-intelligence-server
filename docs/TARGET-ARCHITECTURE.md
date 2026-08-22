@@ -139,7 +139,34 @@ refetch-all. Works identically for a live session (manifest + aggregates grow) a
 5. **Per-session `manifest.json`** generation (live-updating) — the visualizer's entry point.
 6. Build the visualizer against the manifest + windowed-LOD + media-range endpoints.
 
-## One real fork to decide
+## Running this on Render today (no new subscription, portable later)
+
+Constraint: stay on Render's existing Postgres + disk for now, no new paid service, but keep the data
+trivially portable. How each layer maps:
+
+- **Store 3 (bytes):** the **Render persistent disk** IS the object store for now, reached through a
+  one-file **storage seam** (`storage.js`). Callers never touch `fs`; migrating to R2/S3 later = add the
+  driver + `aws s3 sync` the files. Keys and the DB don't change. *(shipped)*
+- **Store 1 (catalog):** the existing Postgres — `sessions`, `files`, and a new **`streams`** table
+  (per session×stream: kind, real time-span, counts, bytes) that powers the visualizer manifest.
+  *(shipped)* Add `users`/`shares`/`jobs`/`artifacts` as needed.
+- **Store 2 (time-series):** **Render Postgres does NOT offer the TimescaleDB extension** — it *does*
+  offer **PostGIS + pgvector**. So on Render: plain Postgres + PostGIS (geo) + pgvector (embeddings),
+  and **hand-rolled rollup tables** as the LOD stand-in for Timescale continuous aggregates (a
+  `records_lod_1s/10s/1m` refreshed on ingest). When you outgrow Render, the hypertables + continuous
+  aggregates are a drop-in upgrade because the queries stay standard SQL.
+- **Store 4 (analytics):** deferred. Add Parquet exports to object storage when the GPU/analysis layer
+  lands; DuckDB reads them with no new always-on service.
+
+**Portability guarantees:** files are plain objects in a clean `{session}/{stream}/{file}` tree (copy
+anywhere); the DB is stock Postgres (`pg_dump` anytime); no Render-proprietary features are used. The
+storage seam is the only code that knows where bytes live.
+
+**Shipped in this increment:** `storage.js` seam (disk driver), the `streams` catalog kept current on
+ingest, and `GET /api/manifest?session=` — the per-session replay contract (clock + streams + media
+URLs), with a files-table fallback for sessions ingested before the catalog existed.
+
+## One real fork to decide (once you migrate off Render)
 
 - **Timescale-in-Postgres (recommended default)** vs a separate **ClickHouse** cluster for the hot
   time-series. Start with Timescale: it keeps geo (PostGIS), time-series (hypertables + LOD), vectors

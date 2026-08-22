@@ -52,10 +52,25 @@ create table if not exists records (
   data jsonb,
   received_at timestamptz default now()
 );
+-- Per session x stream catalog: the visualizer's manifest source (what streams exist, their real
+-- time span, size). Cheap to keep current on ingest; never holds samples.
+create table if not exists streams (
+  session_id text,
+  stream text,
+  kind text,
+  first_wall bigint,
+  last_wall bigint,
+  file_count int default 0,
+  record_count bigint default 0,
+  bytes bigint default 0,
+  updated_at timestamptz default now(),
+  primary key (session_id, stream)
+);
 create index if not exists records_stream_wall on records (stream, wall);
 create index if not exists records_session on records (session_id, stream);
 create index if not exists files_session on files (session_id, kind);
 create index if not exists files_stream on files (session_id, stream, filename);
+create index if not exists streams_session on streams (session_id);
 `;
 
 async function init() {

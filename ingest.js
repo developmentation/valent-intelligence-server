@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { pool } = require('./db');
+const storage = require('./storage');
 
 const MEDIA_ROOT = process.env.MEDIA_ROOT || '/data/media';
 
@@ -116,12 +117,10 @@ async function storeMember(m) {
   const { sessionId, stream, filename } = splitRel(m.rel);
   if (!sessionId) return { skipped: true };
   const kind = kindOf(filename, stream);
+  const key = [sessionId, stream, filename].filter(Boolean).join('/');
 
-  // Write to disk (idempotent by content path).
-  const dir = path.join(MEDIA_ROOT, sessionId, stream);
-  fs.mkdirSync(dir, { recursive: true });
-  const dest = path.join(dir, filename);
-  fs.writeFileSync(dest, m.bytes);
+  // Persist the bytes through the storage seam (disk today, S3/R2 later — same key).
+  await storage.put(key, m.bytes);
 
   if (filename === 'manifest.jsonl') {
     // Session metadata + clock; overwrite, don't index as a file (changes every batch).
@@ -133,32 +132,58 @@ async function storeMember(m) {
   const ins = await pool.query(
     `insert into files (session_id, stream, filename, path, sha256, bytes, kind)
      values ($1,$2,$3,$4,$5,$6,$7) on conflict (sha256) do nothing returning id`,
-    [sessionId, stream, filename, path.join(sessionId, stream, filename), m.sha, m.len, kind],
+    [sessionId, stream, filename, key, m.sha, m.len, kind],
   );
   if (ins.rowCount === 0) return { duplicate: true };
 
-  let recCount = 0;
+  let recCount = 0, minWall = null, maxWall = null;
   if (kind === 'json' && filename.endsWith('.jsonl')) {
-    recCount = await ingestJsonl(sessionId, stream, m.bytes);
+    const r = await ingestJsonl(sessionId, stream, m.bytes);
+    recCount = r.count; minWall = r.minWall; maxWall = r.maxWall;
   }
+  // Keep the per-stream catalog current (visualizer manifest source).
+  await upsertStream(sessionId, stream, kind, m.len, recCount, minWall, maxWall);
   return { stored: true, kind, records: recCount };
+}
+
+/** Roll one stored file into the session×stream catalog: extend the time span, bump counts + bytes. */
+async function upsertStream(sessionId, stream, kind, bytes, recCount, minWall, maxWall) {
+  await pool.query(
+    `insert into streams (session_id, stream, kind, first_wall, last_wall, file_count, record_count, bytes, updated_at)
+     values ($1,$2,$3,$4,$5,1,$6,$7, now())
+     on conflict (session_id, stream) do update set
+       kind = excluded.kind,
+       first_wall = least(streams.first_wall, excluded.first_wall),
+       last_wall  = greatest(streams.last_wall, excluded.last_wall),
+       file_count = streams.file_count + 1,
+       record_count = streams.record_count + excluded.record_count,
+       bytes = streams.bytes + excluded.bytes,
+       updated_at = now()`,
+    [sessionId, stream, kind, minWall, maxWall, recCount, bytes],
+  );
 }
 
 async function ingestJsonl(sessionId, stream, bytes) {
   const text = bytes.toString('utf8');
   const rows = [];
-  let seen = 0;
+  let seen = 0, minWall = null, maxWall = null;
   for (const line of text.split('\n')) {
     const s = line.trim();
     if (!s) continue;
     let o;
     try { o = JSON.parse(s); } catch { continue; }
     seen++;
+    // Track the real capture-time span across ALL records (even un-indexed) for the stream catalog.
+    const w = walOf(o);
+    if (typeof w === 'number') {
+      if (minWall === null || w < minWall) minWall = w;
+      if (maxWall === null || w > maxWall) maxWall = w;
+    }
     // The raw .jsonl is already on disk (full fidelity); only explode dashboard-queryable streams
     // into Postgres so the DB stays a lean index instead of a multi-million-row blob store.
     if (!shouldIndex(stream, o)) continue;
     // Strip NUL bytes so a single bad record can't 500 the whole batch (and jam the phone's retry).
-    rows.push([sessionId, stream, (typeof o.ern === 'number' ? o.ern : null), walOf(o), stripNul(o)]);
+    rows.push([sessionId, stream, (typeof o.ern === 'number' ? o.ern : null), w, stripNul(o)]);
   }
   // Batch insert. `records` is a DERIVED index — the raw .jsonl is already persisted to disk in
   // storeMember — so if a chunk trips a Postgres constraint we retry it row-by-row and skip only the
@@ -182,7 +207,7 @@ async function ingestJsonl(sessionId, stream, bytes) {
   }
   // Report ALL records captured (they're all on disk), not just the indexed subset, so the session's
   // record_count reflects true capture volume even though most streams aren't exploded into the DB.
-  return seen;
+  return { count: seen, minWall, maxWall };
 }
 
 async function insertRecords(slice) {
