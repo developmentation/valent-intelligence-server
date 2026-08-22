@@ -446,13 +446,16 @@ function connectSSE(){
     const es=new EventSource('/api/stream',{withCredentials:true});
     es.onmessage=e=>{
       let d; try{ d=JSON.parse(e.data);}catch(_){return;}
-      if(!d||!d.type) return;
-      if(d.type==='photo' && d.session===state.sid){ state.last=Date.now(); refreshMode(); onNewMedia(d.url); }
-      else if(d.type==='live' && d.session===state.sid){ state.last=Date.now(); if(d.lat!=null){ if(state.live) moveHead(d.lat,d.lon);} refreshMode(); }
-      else if(d.type==='ingest'){ // a batch landed — maybe a newer session started
-        if(d.session && d.session>state.sid){ pickSession(); }
-        else if(d.session===state.sid){ state.last=Date.now(); refreshMode(); refreshFusion(); }
-      }
+      if(!d||!d.type||!d.session) return;   // session-less events (e.g. error) don't concern /live
+      // A newer session (or the first one) appearing on ANY lane — photo, live fix, or bulk batch —
+      // means a fresh capture started: follow it immediately. Session ids are timestamp-prefixed, so
+      // string-greater = newer. The 15s poll is only a backstop.
+      if(!state.sid || d.session>state.sid){ pickSession(); return; }
+      if(d.session!==state.sid) return;     // a straggler from an older session — ignore
+      state.last=Date.now(); refreshMode(); // any event on the current session keeps it "live"
+      if(d.type==='photo'){ onNewMedia(d.url); }
+      else if(d.type==='live'){ if(d.lat!=null && state.live) moveHead(d.lat,d.lon); }
+      else if(d.type==='ingest'){ refreshFusion(); }
     };
     es.onerror=()=>{ /* browser auto-reconnects */ };
   }catch(e){}
