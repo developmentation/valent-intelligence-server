@@ -474,16 +474,38 @@ app.get('/api/streams', requireAdmin, async (req, res) => {
   })));
 });
 
-// Ordered audio clips for the streaming player (the .aac chunks; .anchors sidecars are kind='binary').
+const CHUNK_SECONDS = 60;   // audio chunk length; HLS segment duration + clip-count → seconds
+// Ordered audio clips (metadata) for the player UI.
 app.get('/api/audio', requireAdmin, async (req, res) => {
   const s = req.query.session; const args = [];
   let where = `stream='audio' and kind='audio'`;
   if (s) { args.push(s); where += ` and session_id=$1`; }
   const q = await pool.query(
     `select session_id, filename, path, bytes from files where ${where} order by filename asc limit 5000`, args);
-  res.json(q.rows.map((r) => ({
-    session: r.session_id, filename: r.filename, url: storage.publicUrl(r.path), bytes: Number(r.bytes || 0),
-  })));
+  const clips = q.rows.map((r) => ({ session: r.session_id, filename: r.filename, url: storage.publicUrl(r.path), bytes: Number(r.bytes || 0) }));
+  res.json({ clips, seconds: clips.length * CHUNK_SECONDS });
+});
+
+// HLS playlist: the session's .aac chunks presented as ONE continuous, scrubbable timeline. A live
+// session is an EVENT playlist (seekable from 0:00 AND follows the live edge; grows as chunks land);
+// a finished one is VOD (#EXT-X-ENDLIST). hls.js plays raw-AAC (ADTS) segments directly and joins them
+// gaplessly with look-ahead buffering. Same-origin, so the auth cookie rides along to /media segments.
+app.get('/api/audio/hls', requireAdmin, async (req, res) => {
+  const s = req.query.session;
+  if (!s) return res.status(400).send('session required');
+  const rows = (await pool.query(
+    `select filename, path from files where session_id=$1 and stream='audio' and kind='audio' order by filename asc`, [s])).rows;
+  if (!rows.length) return res.status(404).send('no audio');
+  const live = Number((await pool.query(
+    `select count(*) filter (where received_at > now() - interval '3 minutes') recent from batches where session_id=$1`, [s])).rows[0].recent || 0) > 0;
+  let m = '#EXTM3U\n#EXT-X-VERSION:3\n';
+  m += `#EXT-X-TARGETDURATION:${CHUNK_SECONDS}\n#EXT-X-MEDIA-SEQUENCE:0\n`;
+  m += `#EXT-X-PLAYLIST-TYPE:${live ? 'EVENT' : 'VOD'}\n`;
+  for (const r of rows) m += `#EXTINF:${CHUNK_SECONDS.toFixed(1)},\n${storage.publicUrl(r.path)}\n`;
+  if (!live) m += '#EXT-X-ENDLIST\n';
+  res.set('Content-Type', 'application/vnd.apple.mpegurl');
+  res.set('Cache-Control', 'no-cache');
+  res.send(m);
 });
 
 app.get('/api/gallery', requireAdmin, async (req, res) => {
