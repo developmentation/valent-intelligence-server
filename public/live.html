@@ -148,9 +148,20 @@
   .thumb{position:relative;flex:none;width:84px;height:60px;border-radius:11px;overflow:hidden;cursor:pointer;
     border:2px solid transparent;background:#12151c;transition:transform .2s,border-color .2s;animation:tin .5s ease both}
   @keyframes tin{from{opacity:0;transform:translateY(8px) scale(.92)}to{opacity:1;transform:none}}
-  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .45s}
+  .thumb img.rdy{opacity:1}
+  /* skeleton shimmer while the bytes are still coming over a flaky link */
+  .thumb.loading{background:linear-gradient(100deg,#12151c 30%,#1c2230 50%,#12151c 70%);
+    background-size:220% 100%;animation:tin .5s ease both, shim 1.4s linear infinite}
+  @keyframes shim{from{background-position:220% 0}to{background-position:-40% 0}}
   .thumb:hover{transform:translateY(-2px)}
   .thumb.cur{border-color:var(--accent)}
+  /* stage loader — a quiet spinner instead of a black screen while the current image loads */
+  #stageload{position:fixed;inset:0;z-index:2;display:none;place-items:center;pointer-events:none}
+  #stageload.show{display:grid}
+  #stageload .sp{width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.18);
+    border-top-color:var(--accent);animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
   .thumb .pv{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.28)}
   .thumb .pv svg{width:22px;height:22px;fill:#fff;opacity:.95}
 
@@ -195,6 +206,7 @@
 </head>
 <body>
   <div id="stage"><div class="layer" id="layA"></div><div class="layer" id="layB"></div></div>
+  <div id="stageload"><div class="sp"></div></div>
   <div id="scrim"></div>
 
   <div id="top">
@@ -279,7 +291,8 @@ const TILES={ dark:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.pn
 // first/last are DEVICE wall clock (for duration); liveAt is the SERVER receive time (updated_at) —
 // the skew-proof recency signal used for live/replay + "last signal", since the device clock can be wrong.
 let state={ sid:null, device:'', live:false, first:0, last:0, liveAt:0,
-  items:[], curIdx:0, auto:true, track:[], unpinT:null, replayT:null, muted:true };
+  items:[], curIdx:0, auto:true, track:[], unpinT:null, replayT:null, muted:true,
+  pinnedLoc:null, lastStatus:null };
 
 // ---------- map ----------
 function setTiles(theme){
@@ -305,7 +318,7 @@ function drawTrack(pts){
   trackLayer.clearLayers(); headMarker=null;
   const line=pts.filter(p=>p.suspect!=='true').map(p=>[p.lat,p.lon]);
   if(line.length>1) L.polyline(line,{color:'#ff5a3c',weight:mapExpanded?3:2.5,opacity:.85}).addTo(trackLayer);
-  if(line.length){ const last=line[line.length-1]; moveHead(last[0],last[1]); }
+  if(line.length && !state.pinnedLoc){ const last=line[line.length-1]; moveHead(last[0],last[1]); }
   if(!mapExpanded) fitTrack();   // mini map: always frame the whole path
 }
 function setMapInteractive(on){
@@ -358,32 +371,49 @@ async function placeName(lat,lon){
   }catch(e){ /* keep coords */ }
 }
 function setPlace(name){ if(name) $('#place').textContent=name; }
+// One place to drive the HUD's location: coords + place name + map pin. Used for the live "current"
+// position AND for a selected photo (its own GPS), so browsing the strip repoints the map + name.
+function setLocDisplay(lat,lon,acc){
+  if(lat==null||lon==null) return;
+  $('#coords').textContent=`${lat.toFixed(5)}, ${lon.toFixed(5)}`+(acc?`  ·  ±${Math.round(acc)}m`:'');
+  const key=lat.toFixed(3)+','+lon.toFixed(3);
+  $('#place').textContent = geoCache.has(key)?geoCache.get(key):`${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+  placeName(lat,lon); moveHead(lat,lon);
+}
+function stageLoading(on){ const el=$('#stageload'); if(el) el.classList.toggle('show', !!on); }
 
 // ---------- media stage (cross-fade) ----------
 let front=$('#layA'), back=$('#layB'), curVideo=null;
 function showItem(idx,{fade=true}={}){
   const it=state.items[idx]; if(!it) return;
   state.curIdx=idx; markStrip();
-  // In replay, the map head follows the shown photo's GPS. In live, the head tracks the latest fix
-  // (driven by status/track/SSE), so don't override it from the browsed item.
-  if(state.mode==='replay'){ const L2=locForTime(new Date(it.received_at).getTime()); if(L2) moveHead(L2.lat,L2.lon); }
+  // The newest item while auto+live = "current": show the LIVE position (status-driven). Any other
+  // item (a strip pick, or replay) = show THAT photo's own GPS + place name, pinned on the map.
+  const showingCurrent = state.auto && state.live && idx===0;
+  if(showingCurrent){ state.pinnedLoc=null; const l=state.lastStatus&&state.lastStatus.location; if(l) setLocDisplay(l.lat,l.lon,l.acc); }
+  else { const L2=locForTime(new Date(it.received_at).getTime()); if(L2){ state.pinnedLoc={lat:L2.lat,lon:L2.lon}; setLocDisplay(L2.lat,L2.lon,L2.acc); } }
   back.innerHTML=''; curVideo=null;
   const done=()=>{ back.classList.add('on'); front.classList.remove('on'); [front,back]=[back,front]; };
   if(it.type==='video'){
     const v=document.createElement('video'); v.className='fg'; v.src=it.url;
-    v.muted=state.muted; v.autoplay=true; v.playsInline=true; v.loop=(state.mode!=='replay');
+    v.muted=state.muted; v.autoplay=true; v.playsInline=true; v.controls=true; v.loop=(state.mode!=='replay');
     v.setAttribute('playsinline',''); curVideo=v;
     $('#unmute').classList.toggle('show', state.muted);
-    v.addEventListener('canplay',()=>{ done(); v.play().catch(()=>{}); },{once:true});
+    v.addEventListener('loadeddata',()=>{ done(); v.play().catch(()=>{}); },{once:true});
     v.addEventListener('ended',()=>{ if(state.mode==='replay') stepReplay(); });
     const bg=document.createElement('div'); bg.className='bg'; bg.style.background='#000';
     back.append(bg,v);
-    setTimeout(()=>{ if(!back.classList.contains('on')) done(); },1500); // fallback if canplay stalls
+    setTimeout(()=>{ if(!back.classList.contains('on')) done(); },2500); // fallback if it stalls
   }else{
-    $('#unmute').classList.remove('show');
+    $('#unmute').classList.remove('show'); stageLoading(true);
     const im=new Image(); im.className='fg'; im.decoding='async';
     const bg=document.createElement('img'); bg.className='bg';
-    im.onload=done; im.onerror=done; bg.src=it.url; im.src=it.url;
+    let tries=0;
+    im.onload=()=>{ stageLoading(false); done(); };
+    // Flaky wifi/cell: retry a few times with a cache-busting param before giving up (keeps the strip
+    // box, doesn't wedge the stage black).
+    im.onerror=()=>{ if(tries++<3){ setTimeout(()=>{ const u=it.url+(it.url.includes('?')?'&':'?')+'r='+tries+'_'+Date.now(); bg.src=u; im.src=u; }, 2500); } else { stageLoading(false); done(); } };
+    bg.src=it.url; im.src=it.url;
     back.append(bg,im);
   }
 }
@@ -449,11 +479,9 @@ function renderBattery(b){
 function renderStatus(s){
   state.lastStatus=s;
   const loc=s.location;
-  if(loc){ $('#coords').textContent=`${loc.lat.toFixed(5)}, ${loc.lon.toFixed(5)}`+(loc.acc?`  ·  ±${Math.round(loc.acc)}m`:'');
-    if($('#place').textContent==='—'||!geoCache.size) $('#place').textContent=`${loc.lat.toFixed(3)}, ${loc.lon.toFixed(3)}`;
-    placeName(loc.lat,loc.lon);
-    if(state.live) moveHead(loc.lat,loc.lon);
-  }
+  // Only drive the map/place from the LIVE position when we're actually showing "current" (no photo
+  // pinned) — otherwise a selected photo's place/pin would be overwritten by the live fix.
+  if(loc && !state.pinnedLoc) setLocDisplay(loc.lat, loc.lon, loc.acc);
   const facts=[];
   // activity + de-jittered pace + heading, as one line
   const pace=computePace();
@@ -496,8 +524,11 @@ function fillInfo(){
 }
 function renderScene(list){
   if(!list||!list.length) return;
-  const recent=[]; for(const t of list){ if(!recent.length||recent[recent.length-1].label!==t.label) recent.push(t); }
-  const tail=recent.slice(-4);
+  // Distinct labels by MOST-RECENT occurrence (not just consecutive) — so an alternating history like
+  // "Field recording, Vehicle, Field recording, Vehicle" collapses to two chips, never doubled.
+  const seen=new Set(), rev=[];
+  for(let i=list.length-1;i>=0 && rev.length<4;i--){ const l=list[i].label; if(!seen.has(l)){ seen.add(l); rev.push(list[i]); } }
+  const tail=rev.reverse();   // oldest→newest of the distinct set; last = current
   const html=tail.map((t,i)=>`<span class="chip scene${i===tail.length-1?' cur':''}">${svg('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>')}${esc(t.label)}</span>`).join('');
   // keep scene chips after the fact chips
   const base=$('#facts').querySelectorAll('.chip:not(.scene)');
@@ -505,14 +536,24 @@ function renderScene(list){
 }
 
 // ---------- filmstrip ----------
+// We know the item list even when the bytes are slow (flaky wifi/cell), so lay out a skeleton box PER
+// item immediately and fade each image in when it loads; retry a few times before giving up. The boxes
+// are always present (anticipating the load), never a blank strip.
+function thumbImg(d, url){
+  const img=new Image(); img.alt=''; let tries=0;
+  img.onload=()=>{ d.classList.remove('loading'); img.classList.add('rdy'); };
+  img.onerror=()=>{ if(tries++<4) setTimeout(()=>{ img.src=url+(url.includes('?')?'&':'?')+'r='+tries+'_'+Date.now(); }, 3000); };
+  img.src=url; d.appendChild(img);
+}
 function renderStrip(){
   const f=$('#films'); f.innerHTML='';
   state.items.forEach((it,i)=>{
-    const d=document.createElement('div'); d.className='thumb'+(i===state.curIdx?' cur':'');
+    const d=document.createElement('div'); d.className='thumb loading'+(i===state.curIdx?' cur':'');
     if(it.type==='video'){
-      d.innerHTML=`<video src="${it.url}#t=0.1" muted preload="metadata"></video><div class="pv">${svg('<path d="M8 5v14l11-7z"/>')}</div>`;
+      d.innerHTML=`<div class="pv">${svg('<path d="M8 5v14l11-7z"/>')}</div>`;
       d.querySelector('.pv svg').setAttribute('fill','#fff'); d.querySelector('.pv svg').removeAttribute('stroke');
-    } else d.innerHTML=`<img src="${it.url}" loading="lazy" alt="">`;
+      thumbImg(d, it.url+'#t=0.1');   // poster frame (best-effort)
+    } else thumbImg(d, it.url);
     d.onclick=()=>pinManual(i);
     f.appendChild(d);
   });
@@ -582,7 +623,7 @@ async function refreshFusion(){
 async function refreshTrack(){
   try{ const trk=await jget('/api/track?session='+encodeURIComponent(state.sid));
     state.track=trk.filter(p=>p.lat!=null); drawTrack(state.track);
-    if(state.live){ const last=state.track[state.track.length-1]; if(last) moveHead(last.lat,last.lon); }
+    if(state.live && !state.pinnedLoc){ const last=state.track[state.track.length-1]; if(last) moveHead(last.lat,last.lon); }
   }catch(e){}
 }
 
@@ -615,7 +656,7 @@ function connectSSE(){
       if(d.session!==state.sid) return;     // a straggler from an older session — ignore
       state.liveAt=Date.now(); if(d.wall) state.last=Number(d.wall); refreshMode(); // any event keeps it "live"
       if(d.type==='photo'){ onNewMedia(d.url); }
-      else if(d.type==='live'){ if(d.lat!=null && state.live) moveHead(d.lat,d.lon); }
+      else if(d.type==='live'){ if(d.lat!=null && state.live && !state.pinnedLoc) moveHead(d.lat,d.lon); }
       else if(d.type==='ingest'){ refreshFusion(); }
     };
     es.onerror=()=>{ /* browser auto-reconnects */ };
