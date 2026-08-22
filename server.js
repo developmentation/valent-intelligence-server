@@ -1,6 +1,5 @@
 'use strict';
 const express = require('express');
-const session = require('express-session');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -223,18 +222,49 @@ app.get('/admin/validate', async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
-// ---- admin auth ----
-app.use(session({
-  secret: process.env.SESSION_SECRET || crypto.randomBytes(24).toString('hex'),
-  resave: false,
-  saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'lax', secure: 'auto', maxAge: 1000 * 60 * 60 * 24 * 14 },
-}));
+// ---- admin auth: short-lived JWT access cookie + refresh cookie, both HttpOnly ----
+// Dependency-free HS256 JWT. The access token lives 15 min; a valid refresh token silently rotates a
+// new access cookie (sliding session). Only the password unlocks it; secrets stay in Render env.
+const AUTH_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const ACCESS_TTL = 15 * 60;               // 15 minutes
+const REFRESH_TTL = 14 * 24 * 60 * 60;    // 14 days
+const b64uJson = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+function signJwt(payload, ttl) {
+  const now = Math.floor(Date.now() / 1000);
+  const data = `${b64uJson({ alg: 'HS256', typ: 'JWT' })}.${b64uJson({ ...payload, iat: now, exp: now + ttl })}`;
+  return `${data}.${crypto.createHmac('sha256', AUTH_SECRET).update(data).digest('base64url')}`;
+}
+function verifyJwt(token) {
+  if (!token || token.split('.').length !== 3) return null;
+  const [h, p, s] = token.split('.');
+  const expect = crypto.createHmac('sha256', AUTH_SECRET).update(`${h}.${p}`).digest('base64url');
+  const a = Buffer.from(s); const b = Buffer.from(expect);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  let payload; try { payload = JSON.parse(Buffer.from(p, 'base64url').toString('utf8')); } catch (_) { return null; }
+  if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return payload;
+}
+function parseCookies(req) {
+  const out = {};
+  (req.headers.cookie || '').split(';').forEach((c) => {
+    const i = c.indexOf('='); if (i > 0) out[c.slice(0, i).trim()] = decodeURIComponent(c.slice(i + 1).trim());
+  });
+  return out;
+}
+function setAuthCookies(res, { refresh = true } = {}) {
+  res.append('Set-Cookie', `va=${signJwt({ sub: 'admin', typ: 'a' }, ACCESS_TTL)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${ACCESS_TTL}; Secure`);
+  if (refresh) res.append('Set-Cookie', `vr=${signJwt({ sub: 'admin', typ: 'r' }, REFRESH_TTL)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${REFRESH_TTL}; Secure`);
+}
+
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
 function requireAdmin(req, res, next) {
-  if (req.session && req.session.admin) return next();
+  const c = parseCookies(req);
+  const access = verifyJwt(c.va);
+  if (access && access.typ === 'a') return next();
+  const refresh = verifyJwt(c.vr);
+  if (refresh && refresh.typ === 'r') { setAuthCookies(res, { refresh: false }); return next(); }   // rotate access
   if (req.path.startsWith('/api/') || req.path.startsWith('/media/')) {
     return res.status(401).json({ ok: false, error: 'login required' });
   }
@@ -246,12 +276,16 @@ app.get('/login', (req, res) => {
 });
 app.post('/login', (req, res) => {
   if (ADMIN_PASSWORD && req.body.password === ADMIN_PASSWORD) {
-    req.session.admin = true;
+    setAuthCookies(res);
     return res.redirect('/');
   }
   return res.redirect('/login?e=1');
 });
-app.post('/logout', (req, res) => { req.session.destroy(() => res.redirect('/login')); });
+app.post('/logout', (_req, res) => {
+  res.append('Set-Cookie', 'va=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure');
+  res.append('Set-Cookie', 'vr=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure');
+  res.redirect('/login');
+});
 
 // ---- viewer APIs (admin only) ----
 app.get('/api/sessions', requireAdmin, async (_req, res) => {
