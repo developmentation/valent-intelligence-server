@@ -151,6 +151,7 @@
   .thumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .45s}
   .thumb img.rdy{opacity:1}
   .thumb video{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb.vid{background:#16202b}   /* video tile: dark box + play badge, no media fetch */
   /* skeleton shimmer while the bytes are still coming over a flaky link */
   .thumb.loading{background:linear-gradient(100deg,#12151c 30%,#1c2230 50%,#12151c 70%);
     background-size:220% 100%;animation:tin .5s ease both, shim 1.4s linear infinite}
@@ -569,18 +570,16 @@ function thumbImg(d, url){
 function renderStrip(){
   const f=$('#films'); f.innerHTML='';
   state.items.forEach((it,i)=>{
-    const d=document.createElement('div'); d.className='thumb loading'+(i===state.curIdx?' cur':'');
+    const d=document.createElement('div'); d.className='thumb'+(i===state.curIdx?' cur':'');
     if(it.type==='video'){
-      // A <video> (not <img>) can render a poster frame; H.264 shows a thumbnail, others just stay dark
-      // under the play badge. Either way the tile is clearly a video and clickable.
-      const v=document.createElement('video'); v.src=it.url+'#t=0.1'; v.muted=true; v.preload='metadata'; v.playsInline=true;
-      v.addEventListener('loadeddata',()=>{ d.classList.remove('loading'); },{once:true});
-      v.addEventListener('error',()=>{ d.classList.remove('loading'); },{once:true});
-      d.appendChild(v);
+      // A video tile is a play badge on a dark box — deliberately NO media fetch. Five <video>/<img>
+      // thumbnails each fetching the clip was starving the STAGE video's download on mobile ("spins
+      // then stops"). No poster is a fair trade for the stage playing reliably.
+      d.classList.add('vid');
       const pv=document.createElement('div'); pv.className='pv'; pv.innerHTML=svg('<path d="M8 5v14l11-7z"/>');
       pv.querySelector('svg').setAttribute('fill','#fff'); pv.querySelector('svg').removeAttribute('stroke');
       d.appendChild(pv);
-    } else thumbImg(d, it.url);
+    } else { d.classList.add('loading'); thumbImg(d, it.url); }
     d.onclick=()=>pinManual(i);
     f.appendChild(d);
   });
