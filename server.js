@@ -79,8 +79,9 @@ app.get('/admin/validate', async (req, res) => {
     const byStream = {};
     let onDisk = 0; const missingDisk = [];
     for (const f of files) {
-      const s = (byStream[f.stream] || (byStream[f.stream] = { count: 0, indices: new Set(), bytes: 0, kind: f.kind, exts: {} }));
+      const s = (byStream[f.stream] || (byStream[f.stream] = { count: 0, indices: new Set(), bytes: 0, kind: f.kind, exts: {}, sample: [] }));
       s.count++; s.bytes += Number(f.bytes || 0);
+      if (s.sample.length < 3) s.sample.push(f.filename);
       const m = idxRe.exec(f.filename); if (m) s.indices.add(parseInt(m[1], 10));
       const e = extRe.exec(f.filename); if (e) s.exts[e[1]] = (s.exts[e[1]] || 0) + 1;
       if (await storage.exists(f.path)) onDisk++; else missingDisk.push(f.path);
@@ -201,6 +202,7 @@ app.get('/admin/validate', async (req, res) => {
       capture: { closedDetected, sessionClose, globalTicks, sparseStreams },  // sparse = expected, informational
       manifestPresent,
       alignment: { aligned: manifestAligned, misaligned, serverOnlyStreams, perStream },
+      _samples: Object.fromEntries(Object.entries(byStream).map(([k, v]) => [k, v.sample])),
       streams: streams.map((s) => ({ ...s, indexedRecords: indexed[s.stream] || 0 })),
       verdict,
       reasons: [
