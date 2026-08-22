@@ -40,6 +40,14 @@
   .gallery img,.gallery video{width:100%;height:100%;object-fit:cover;display:block}
   .gallery .pv{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:2px 5px;border-radius:4px}
   .empty{color:var(--mut);padding:24px;font-size:13px;text-align:center}
+  .strwrap{margin:10px 18px 0}
+  .strgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:8px;padding:10px;max-height:210px;overflow:auto}
+  .scell{background:#111;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .scell.flash{animation:cellflash 1.4s ease-out}
+  @keyframes cellflash{0%{border-color:var(--violet);background:#191527}100%{border-color:var(--line);background:#111}}
+  .sname{font-size:11px;color:var(--ink);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sval{font-size:13px;color:var(--violet);font-family:ui-monospace,Menlo,monospace;margin-top:2px}
+  .sago{font-size:9px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
   .leaflet-container{background:#111}
 </style>
 </head>
@@ -56,6 +64,8 @@
 
 <div class="status" id="status"></div>
 <div class="feed" id="feed"><div class="row">Waiting for the live stream…</div></div>
+
+<div class="panel strwrap"><h2><span>Streams — everything captured</span><span id="strmeta"></span></h2><div class="strgrid" id="streams"></div></div>
 
 <div class="grid">
   <div class="panel"><h2><span>Where — de-noised GPS track</span><span id="mapmeta"></span></h2><div id="map"></div></div>
@@ -102,17 +112,50 @@ async function loadStatus(){
   ];
   $('#status').innerHTML = chips.map(([k,v,w])=>`<div class="chip"><div class="k">${k}</div><div class="v">${v}</div>${w?`<div class="k" style="margin-top:3px">${fmtAgo(w)}</div>`:''}</div>`).join('');
 }
+function kmBetween(a,b){ const R=6371,d2r=Math.PI/180;
+  const dLat=(b.lat-a.lat)*d2r, dLon=(b.lon-a.lon)*d2r, la=a.lat*d2r, lb=b.lat*d2r;
+  const h=Math.sin(dLat/2)**2+Math.cos(la)*Math.cos(lb)*Math.sin(dLon/2)**2; return 2*R*Math.asin(Math.sqrt(h)); }
 async function loadTrack(){
   const sess = $('#session').value;
-  const pts = await (await fetch('/api/track'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
+  const pts = (await (await fetch('/api/track'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json())
+                .filter(p=>p.suspect!=='true');
   trackLayer.clearLayers();
   $('#mapmeta').textContent = pts.length ? pts.length.toLocaleString()+' pts' : '';
   if(!pts.length) return;
-  const line = pts.filter(p=>p.suspect!=='true').map(p=>[p.lat,p.lon]);
-  if(line.length>1) L.polyline(line, {color:'#ff5a3c', weight:3, opacity:.9}).addTo(trackLayer);
-  const last = pts[pts.length-1];
-  L.circleMarker([last.lat,last.lon], {radius:7,color:'#fff',weight:3,fillColor:'#ff5a3c',fillOpacity:1}).addTo(trackLayer);
-  try{ map.fitBounds(L.latLngBounds(line.length?line:[[last.lat,last.lon]]).pad(0.2)); }catch(e){}
+  // Split into segments so we never connect two different journeys/locations with a straight line:
+  // a new segment starts on a session change OR a jump > 25 km (a teleport / flight gap).
+  const segs=[]; let cur=[];
+  for(const p of pts){
+    if(cur.length){ const prev=cur[cur.length-1];
+      if(p.session_id!==prev.session_id || kmBetween(prev,p)>25){ segs.push(cur); cur=[]; } }
+    cur.push(p);
+  }
+  if(cur.length) segs.push(cur);
+  const all=[];
+  for(const seg of segs){
+    const line=seg.map(p=>[p.lat,p.lon]); all.push(...line);
+    if(line.length>1) L.polyline(line,{color:'#ff5a3c',weight:3,opacity:.85}).addTo(trackLayer);
+    else L.circleMarker(line[0],{radius:3,color:'#ff5a3c',fillColor:'#ff5a3c',fillOpacity:.8}).addTo(trackLayer);
+  }
+  const last=pts[pts.length-1];   // ordered by session then time → newest session's latest fix
+  L.circleMarker([last.lat,last.lon],{radius:7,color:'#fff',weight:3,fillColor:'#ff5a3c',fillOpacity:1}).addTo(trackLayer);
+  try{ map.fitBounds(L.latLngBounds(all.length?all:[[last.lat,last.lon]]).pad(0.2)); }catch(e){}
+}
+let strState={};
+async function loadStreams(){
+  const sess=$('#session').value;
+  const rows=await (await fetch('/api/streams'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
+  $('#strmeta').textContent = rows.length ? rows.length+' streams' : '';
+  const g=$('#streams');
+  if(!rows.length){ g.innerHTML='<div class="empty">No streams yet.</div>'; return; }
+  g.innerHTML = rows.map(r=>{
+    const prev=strState[r.stream];
+    const changed = prev && (prev.records!==r.records || prev.files!==r.files);
+    const val = r.records ? r.records.toLocaleString()+' rec' : r.files+' file'+(r.files===1?'':'s');
+    return `<div class="scell${changed?' flash':''}"><div class="sname">${r.stream}</div>`+
+      `<div class="sval">${val}</div><div class="sago">${r.files} files · ${fmtAgo(r.lastRecv)}</div></div>`;
+  }).join('');
+  rows.forEach(r=>strState[r.stream]={records:r.records,files:r.files});
 }
 async function loadGallery(){
   const sess = $('#session').value;
@@ -128,7 +171,7 @@ async function loadGallery(){
   }).join('');
   knownGallery = new Set(items.map(it=>it.url));
 }
-async function refresh(){ await Promise.all([loadStatus(), loadTrack(), loadGallery()]); }
+async function refresh(){ await Promise.all([loadStatus(), loadStreams(), loadTrack(), loadGallery()]); }
 
 // ---- live status indicator ----
 function setLive(state){

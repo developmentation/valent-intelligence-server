@@ -333,8 +333,30 @@ app.get('/api/track', requireAdmin, async (req, res) => {
             (data->>'acc')::float8 as acc, (data->>'speed')::float8 as speed,
             (data->>'suspect') as suspect
      from records where ${where} and data ? 'lat'
-     order by wall asc limit 50000`, args);
+     order by session_id, wall asc limit 50000`, args);   // grouped by session so the client draws one line per journey
   res.json(q.rows.filter(r => r.lat != null && r.lon != null));
+});
+
+// Every stream captured (all sessions or one), for a comprehensive live view — not just the 4 the
+// status chips read. Files/bytes come from the file index (all streams); records from the catalog.
+app.get('/api/streams', requireAdmin, async (req, res) => {
+  const s = req.query.session; const args = [];
+  const where = s ? 'f.session_id=$1' : '1=1';
+  if (s) args.push(s);
+  const q = await pool.query(
+    `select f.stream,
+            count(*)::int files,
+            coalesce(sum(f.bytes),0)::bigint bytes,
+            max(f.received_at) last_recv,
+            max(f.kind) kind,
+            coalesce((select sum(record_count) from streams st
+                      where st.stream=f.stream ${s ? 'and st.session_id=$1' : ''}),0)::bigint records
+     from files f where ${where} group by f.stream order by files desc`, args);
+  res.json(q.rows.map(r => ({
+    stream: r.stream, kind: r.kind, files: r.files,
+    bytes: Number(r.bytes || 0), records: Number(r.records || 0),
+    lastRecv: r.last_recv ? new Date(r.last_recv).getTime() : null,
+  })));
 });
 
 app.get('/api/gallery', requireAdmin, async (req, res) => {
