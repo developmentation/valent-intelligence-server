@@ -100,25 +100,27 @@ app.post('/ingest/live', express.json({ limit: '512kb' }), (req, res) => {
   res.json({ ok: true, added, held: t.pts.length });
 });
 
-// ---- live lane: a just-captured photo (raw bytes), stored immediately + gallery-broadcast ----
-// Disk-backed today via the storage seam; swap to a presigned R2 PUT later without touching callers.
-app.post('/ingest/live/photo', express.raw({ type: () => true, limit: '64mb' }), async (req, res) => {
+// ---- live lane: a just-captured photo OR video, STREAMED straight to storage + gallery-broadcast ----
+// No body parser: the request stream is piped to disk with constant memory, so a large video pushes in
+// real time just like a photo without buffering it whole in RAM (the single instance would OOM). Same
+// path for both; the gallery infers image/video by extension. Presigned R2 direct-PUT later.
+app.post('/ingest/live/photo', async (req, res) => {
   if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
   const sid = String(req.header('x-session') || '');
   const fname = String(req.header('x-filename') || '').replace(/[^a-zA-Z0-9._-]/g, '_');
   const stream = String(req.header('x-stream') || 'camera').replace(/[^a-z0-9_]/gi, '') || 'camera';
-  if (!sid || !fname || !req.body || !req.body.length) return res.status(400).json({ ok: false, error: 'x-session + x-filename + body required' });
+  if (!sid || !fname) return res.status(400).json({ ok: false, error: 'x-session + x-filename required' });
   try {
     const key = `${sid}/${stream}/${fname}`;
-    await storage.put(key, req.body);
-    const sha = crypto.createHash('sha256').update(req.body).digest('hex');
+    const { bytes, sha256 } = await storage.putStream(key, req);   // streams req → disk, hashes as it goes
+    if (!bytes) return res.status(400).json({ ok: false, error: 'empty body' });
     await pool.query(
       `insert into files (session_id, stream, filename, path, sha256, bytes, kind)
        values ($1,$2,$3,$4,$5,$6,'media') on conflict (sha256) do nothing`,
-      [sid, stream, fname, key, sha, req.body.length]);
+      [sid, stream, fname, key, sha256, bytes]);
     const url = storage.publicUrl(key);
     sseBroadcast({ type: 'photo', session: sid, url, filename: fname, at: Date.now() });
-    res.json({ ok: true, url });
+    res.json({ ok: true, url, bytes });
   } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
 });
 

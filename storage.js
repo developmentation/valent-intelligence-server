@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 /**
  * Pluggable blob store — the ONE seam that keeps the data portable.
@@ -33,6 +34,26 @@ const disk = {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, buf);
     return { key, bytes: buf.length };
+  },
+  /**
+   * Stream a readable straight to storage with CONSTANT memory — for large media (video) that must not
+   * be buffered whole in RAM on the single instance. Hashes as it writes; cleans up a partial file if
+   * the source errors (a dropped upload). Returns { key, bytes, sha256 }. (S3/R2 later: multipart put.)
+   */
+  putStream(key, readable) {
+    const p = abs(key);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      let bytes = 0;
+      const ws = fs.createWriteStream(p);
+      const fail = (e) => { ws.destroy(); fs.unlink(p, () => {}); reject(e); };
+      readable.on('data', (d) => { bytes += d.length; hash.update(d); });
+      readable.on('error', fail);
+      ws.on('error', fail);
+      ws.on('finish', () => resolve({ key, bytes, sha256: hash.digest('hex') }));
+      readable.pipe(ws);
+    });
   },
   async get(key) { return fs.readFileSync(abs(key)); },
   async exists(key) { return fs.existsSync(abs(key)); },
