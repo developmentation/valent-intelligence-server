@@ -103,14 +103,31 @@ app.get('/admin/validate', async (req, res) => {
       'select stream, count(*)::int n from records where session_id=$1 group by stream', [sid])).rows;
     const indexed = {}; recRows.forEach((r) => { indexed[r.stream] = r.n; });
 
-    // Manifest present + best-effort capture-close detection from the raw manifest.
+    // Parse the phone's manifest — the AUTHORITATIVE record of what was captured. A chunk_close with
+    // bytes>0 means that chunk produced a file; bytes==0 is an empty chunk (no file written). So the
+    // set of content chunk indices per stream is exactly what the server must hold. (Multi-file
+    // streams — audio's .anchors sidecar, motion's per-writer .vstream — share the chunk index, so an
+    // index-set comparison is exact regardless of files-per-chunk.)
     const manifestKey = `${sid}/manifest.jsonl`;
     const manifestPresent = await storage.exists(manifestKey);
-    let closedDetected = null;
+    let closedDetected = null; let sessionClose = null;
+    const manifestContent = {}; // stream -> Set(index) that closed with bytes>0
     if (manifestPresent) {
       try {
         const txt = (await storage.get(manifestKey)).toString('utf8');
-        closedDetected = /session_?close|"closed"\s*:\s*true|"ended?"\s*:\s*true/i.test(txt);
+        for (const line of txt.split('\n')) {
+          if (!line) continue;
+          let o; try { o = JSON.parse(line); } catch (_) { continue; }
+          if (o.t === 'chunk_close') {
+            const m = /_(\d+)(?:\.|$)/.exec(o.stem || o.file || '');
+            if (m && Number(o.bytes) > 0) {
+              (manifestContent[o.stream] || (manifestContent[o.stream] = new Set())).add(parseInt(m[1], 10));
+            }
+          } else if (o.t === 'session_close') {
+            sessionClose = { chunks: o.chunks, bytes: Number(o.bytes), durationSec: o.durationSec };
+          }
+        }
+        closedDetected = sessionClose != null;
       } catch (_) { /* leave null */ }
     }
 
@@ -133,12 +150,28 @@ app.get('/admin/validate', async (req, res) => {
       .map((s) => ({ stream: s.stream, chunks: s.chunks, ofTicks: globalTicks, skipped: s.gapCount }));
     const totalGaps = streams.reduce((a, s) => a + s.gapCount, 0);
 
+    // Manifest alignment (the authoritative file check): for every stream the manifest says produced
+    // content, does the server hold exactly those chunk indices? Missing = a real upload gap; extra =
+    // a file the manifest didn't declare. Stream names present on the server but absent from the
+    // manifest content are reported separately (naming differences / no-content streams).
+    const perStream = Object.entries(manifestContent).map(([stream, want]) => {
+      const have = byStream[stream] ? byStream[stream].indices : new Set();
+      const missing = [...want].filter((i) => !have.has(i)).sort((a, b) => a - b);
+      const extra = [...have].filter((i) => !want.has(i)).sort((a, b) => a - b);
+      return { stream, manifestChunks: want.size, serverChunks: have.size, missing, extra, aligned: !missing.length && !extra.length };
+    }).sort((a, b) => Number(a.aligned) - Number(b.aligned));
+    const misaligned = perStream.filter((a) => !a.aligned);
+    const serverOnlyStreams = Object.keys(byStream)
+      .filter((s) => manifestContent[s] === undefined && byStream[s].indices.size > 0);
+    const manifestAligned = manifestPresent && perStream.length > 0 && misaligned.length === 0;
+
     const uploadOk = missingDisk.length === 0 && dbVsScan && manifestPresent;
     const captureClosed = closedDetected === true;
     const verdict = uploading ? 'UPLOADING'
       : !uploadOk ? 'INCOMPLETE'
-        : captureClosed ? 'COMPLETE'
-          : 'UPLOADED_NOT_CLOSED';   // all files delivered, but the capture had no clean close (interrupted)
+        : !manifestAligned ? 'MISALIGNED'
+          : captureClosed ? 'COMPLETE'
+            : 'UPLOADED_NOT_CLOSED';   // all files delivered + aligned, but capture had no clean close
 
     res.json({
       uploading, lastBatchAt: bstat.mx,
@@ -153,11 +186,13 @@ app.get('/admin/validate', async (req, res) => {
         bytes: Number(session.bytes), records: Number(session.record_count),
       },
       upload: { filesOnDisk: onDisk, filesMissingOnDisk: missingDisk.length, missingSample: missingDisk.slice(0, 20) },
-      capture: { closedDetected, globalTicks, sparseStreams },      // sparse = expected, informational
+      capture: { closedDetected, sessionClose, globalTicks, sparseStreams },  // sparse = expected, informational
       manifestPresent,
+      alignment: { aligned: manifestAligned, misaligned, serverOnlyStreams, perStream },
       streams: streams.map((s) => ({ ...s, indexedRecords: indexed[s.stream] || 0 })),
       verdict,
       reasons: [
+        misaligned.length ? `${misaligned.length} stream(s) not aligned with the manifest` : null,
         uploading ? 'still uploading' : null,
         missingDisk.length ? `${missingDisk.length} file(s) not on disk` : null,
         !manifestPresent ? 'manifest missing' : null,
