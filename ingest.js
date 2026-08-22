@@ -224,6 +224,7 @@ async function insertRecords(slice) {
   );
 }
 
+const DEFAULT_DEVICE_NAME = 'Valent';
 async function upsertSessionFromManifest(sessionId, bytes) {
   let device = null, firstWall = null, lastWall = null;
   const text = bytes.toString('utf8');
@@ -232,14 +233,20 @@ async function upsertSessionFromManifest(sessionId, bytes) {
     if (!s) continue;
     let o;
     try { o = JSON.parse(s); } catch { continue; }
-    if (o.device && !device) device = o.device;
-    if (o.model && !device) device = o.model;
+    // The session NAME comes only from an explicit field on the session_open record. It must NOT be
+    // read from `o.model` — those are per-stream ML model ids (e.g. the motion HAR "tinyhar-wisdm-v1",
+    // the audio "ced-small"), not a device name, and were leaking into the session title.
+    if (!device && o.t === 'session_open') {
+      const dn = o.device || o.deviceName || o.name;
+      if (dn) device = String(dn);
+    }
     const w = walOf(o) || (o.t === 'clock_anchor' ? o.wall : null);
     if (typeof w === 'number') {
       if (firstWall === null || w < firstWall) firstWall = w;
       if (lastWall === null || w > lastWall) lastWall = w;
     }
   }
+  if (!device) device = DEFAULT_DEVICE_NAME;   // until the app sends a name; user-configurable later
   await pool.query(
     `insert into sessions (id, device, first_wall, last_wall, updated_at)
        values ($1,$2,$3,$4, now())
