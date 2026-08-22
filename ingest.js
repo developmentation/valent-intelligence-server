@@ -51,7 +51,7 @@ function kindOf(filename, stream) {
  * with env INDEX_STREAMS=csv; set INDEX_STREAMS=* to index everything (legacy behaviour).
  */
 const INDEX_STREAMS_RAW = (process.env.INDEX_STREAMS
-  || 'location,gnss,wifi,motion_activity,audio_scene,media,speech').trim();
+  || 'location,gnss,wifi,motion_activity,audio_scene,media,speech,power').trim();
 const INDEX_ALL = INDEX_STREAMS_RAW === '*';
 const INDEX_STREAMS = new Set(INDEX_STREAMS_RAW.split(',').map((s) => s.trim()).filter(Boolean));
 function shouldIndex(stream, o) {

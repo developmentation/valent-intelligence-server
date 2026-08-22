@@ -87,6 +87,28 @@
   .np .t .ar{font-family:var(--mono);font-size:11px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .fade-swap{transition:opacity .35s}
 
+  /* ---- battery pill + staleness + details modal ---- */
+  .batt{display:inline-flex;align-items:center;gap:6px;height:38px;padding:0 12px;border-radius:11px;
+    border:1px solid var(--line);background:var(--glass);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+    font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ink)}
+  .batt .ico{position:relative;width:22px;height:11px;border:1.5px solid currentColor;border-radius:2.5px;opacity:.9}
+  .batt .ico::after{content:"";position:absolute;right:-3.5px;top:2.5px;width:2px;height:4px;background:currentColor;border-radius:0 1px 1px 0}
+  .batt .ico i{position:absolute;left:1px;top:1px;bottom:1px;background:currentColor;border-radius:1px;transition:width .4s}
+  .batt.ok{color:var(--live)} .batt.mid{color:#f5c451} .batt.low{color:#ff5a3c}
+  .batt .bolt{font-size:11px;margin-left:-2px}
+  .stale{display:none;margin-top:3px;font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;color:#f5c451}
+  .stale.show{display:block}
+  #infomodal{position:fixed;inset:0;z-index:50;display:none;place-items:center;padding:20px;
+    background:rgba(4,6,9,.5);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+  #infomodal.open{display:grid}
+  .infocard{width:min(360px,92vw);border-radius:18px;border:1px solid var(--line);background:rgba(14,17,23,.94);
+    -webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);padding:18px 20px 12px;box-shadow:0 20px 60px rgba(0,0,0,.55)}
+  .infohd{display:flex;justify-content:space-between;align-items:center;font-family:var(--disp);font-weight:600;font-size:15px;margin-bottom:10px}
+  .infohd button{background:none;border:0;font-size:22px;line-height:1;color:var(--mut)}
+  #inforows .r{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid rgba(255,255,255,.06);
+    font-family:var(--mono);font-size:12.5px}
+  #inforows .r .k{color:var(--mut)} #inforows .r .v{color:var(--ink);text-align:right}
+
   /* ---- mini map (bottom-right) ---- */
   #mapwrap{position:fixed;z-index:5;right:18px;bottom:calc(112px + env(safe-area-inset-bottom));
     width:230px;height:172px;border-radius:16px;overflow:hidden;border:1px solid var(--line);
@@ -166,6 +188,8 @@
     .thumb{width:70px;height:50px}
     #livepill{height:50px}
     #unmute{bottom:auto;top:calc(172px + env(safe-area-inset-top));right:12px}
+    .tbtn.soon{display:none}   /* hide inert transcript/audio stubs on phones to save the top row */
+    .batt{height:34px;padding:0 9px}
   }
 </style>
 </head>
@@ -179,9 +203,13 @@
       <div style="min-width:0">
         <div class="badge" id="badge"><span class="st">LIVE</span> <span id="devname" style="color:var(--mut)"></span></div>
         <div class="sub" id="subline">connecting…</div>
+        <div class="stale" id="stale"></div>
       </div>
     </div>
     <div class="tools">
+      <div class="batt" id="battery" style="display:none" title="Capture-device battery"></div>
+      <button class="tbtn" id="btnInfo" title="Details">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.01"/></svg></button>
       <button class="tbtn soon off" id="btnTranscript" title="Transcript (coming soon)">
         <svg viewBox="0 0 24 24"><path d="M4 6h16M4 10h16M4 14h10M4 18h7"/></svg></button>
       <button class="tbtn soon off" id="btnAudio" title="Audio (coming soon)">
@@ -224,6 +252,13 @@
   <div id="panel">
     <h3><span id="panelTitle">Transcript</span><button id="pclose">×</button></h3>
     <div class="soonp"><div class="big" id="panelIcon">✎</div><div id="panelBody">Live transcript will appear here.<br>Coming soon.</div></div>
+  </div>
+
+  <div id="infomodal">
+    <div class="infocard">
+      <div class="infohd"><span>Details</span><button id="infoclose">×</button></div>
+      <div id="inforows"></div>
+    </div>
   </div>
 
   <div id="empty"><div class="e"><div class="big">Waiting for a live capture…</div>No media yet. This view wakes up the moment a session starts sending photos or video.</div></div>
@@ -373,7 +408,44 @@ function stepReplay(){
 
 // ---------- render fusion HUD ----------
 function svg(p){return `<svg viewBox="0 0 24 24">${p}</svg>`;}
+// Great-circle distance (m) + bearing between [lat,lon] pairs — for de-jittered pace and journey length.
+function havM(a,b){const R=6371000,r=Math.PI/180,dLat=(b[0]-a[0])*r,dLon=(b[1]-a[1])*r,la=a[0]*r,lb=b[0]*r;
+  const h=Math.sin(dLat/2)**2+Math.cos(la)*Math.cos(lb)*Math.sin(dLon/2)**2; return 2*R*Math.asin(Math.sqrt(h));}
+function bearingDeg(a,b){const r=Math.PI/180,y=Math.sin((b[1]-a[1])*r)*Math.cos(b[0]*r),
+  x=Math.cos(a[0]*r)*Math.sin(b[0]*r)-Math.sin(a[0]*r)*Math.cos(b[0]*r)*Math.cos((b[1]-a[1])*r);
+  return (Math.atan2(y,x)/r+360)%360;}
+function dir8(d){return ['N','NE','E','SE','S','SW','W','NW'][Math.round(d/45)%8];}
+function fmtDur(sec){sec=Math.max(0,Math.round(sec));const h=Math.floor(sec/3600),m=Math.floor(sec%3600/60);
+  return h>0?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`;}
+// Pace: displacement over a ~50s window (≥6 points if sparse) / elapsed — de-jittered by averaging over
+// distance, never a single noisy fix. Heading is the window's net bearing. moving=false below ~1.5 km/h.
+function computePace(){
+  const pts=state.track.filter(p=>p.suspect!=='true'&&p.lat!=null);
+  if(pts.length<2) return null;
+  const last=pts[pts.length-1], tEnd=last.wall||0;
+  let i=pts.length-1; while(i>0 && (tEnd-(pts[i].wall||0))<50000) i--;
+  if((tEnd-(pts[i].wall||0))/1000<6) i=Math.max(0,pts.length-6);
+  const start=pts[i], span=(tEnd-(start.wall||0))/1000;
+  if(span<=0) return null;
+  let dist=0; for(let k=i+1;k<pts.length;k++) dist+=havM([pts[k-1].lat,pts[k-1].lon],[pts[k].lat,pts[k].lon]);
+  const kmh=(dist/span)*3.6;
+  return {kmh, dir:dir8(bearingDeg([start.lat,start.lon],[last.lat,last.lon])), moving:kmh>=1.5};
+}
+function journeyStats(){
+  const pts=state.track.filter(p=>p.suspect!=='true'&&p.lat!=null);
+  let m=0; for(let k=1;k<pts.length;k++) m+=havM([pts[k-1].lat,pts[k-1].lon],[pts[k].lat,pts[k].lon]);
+  return {km:m/1000, durSec:(state.last&&state.first)?(state.last-state.first)/1000:0};
+}
+function renderBattery(b){
+  const el=$('#battery');
+  if(!b||b.percent==null||b.percent<0){ el.style.display='none'; return; }
+  const p=Math.max(0,Math.min(100,Math.round(b.percent)));
+  el.style.display='inline-flex';
+  el.className='batt '+(p<=15?'low':p<=40?'mid':'ok');
+  el.innerHTML=`<span class="ico"><i style="width:${Math.max(2,p/100*17).toFixed(1)}px"></i></span>${b.charging?'<span class="bolt">⚡</span>':''}${p}%`;
+}
 function renderStatus(s){
+  state.lastStatus=s;
   const loc=s.location;
   if(loc){ $('#coords').textContent=`${loc.lat.toFixed(5)}, ${loc.lon.toFixed(5)}`+(loc.acc?`  ·  ±${Math.round(loc.acc)}m`:'');
     if($('#place').textContent==='—'||!geoCache.size) $('#place').textContent=`${loc.lat.toFixed(3)}, ${loc.lon.toFixed(3)}`;
@@ -381,15 +453,44 @@ function renderStatus(s){
     if(state.live) moveHead(loc.lat,loc.lon);
   }
   const facts=[];
-  if(s.activity) facts.push(`<span class="chip">${svg('<path d="M13 4v6l4 2M6 20l3-6"/><circle cx="12" cy="12" r="9"/>')}<span>${esc(s.activity.label)}</span></span>`);
-  if(s.gnss) facts.push(`<span class="chip">${svg('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>')}<span class="k">sat</span> ${s.gnss.used}/${s.gnss.inView}</span>`);
-  if(s.wifi) facts.push(`<span class="chip">${svg('<path d="M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/>')}${s.wifi.count} AP</span>`);
+  // activity + de-jittered pace + heading, as one line
+  const pace=computePace();
+  let txt = s.activity ? esc(s.activity.label) : (pace&&pace.moving?'Moving':'');
+  if(pace&&pace.moving) txt=(txt||'Moving')+` · ${pace.kmh<10?pace.kmh.toFixed(1):Math.round(pace.kmh)} km/h · ${pace.dir}`;
+  if(txt) facts.push(`<span class="chip">${svg('<path d="M13 4v6l4 2M6 20l3-6"/><circle cx="12" cy="12" r="9"/>')}<span>${txt}</span></span>`);
+  // journey so far
+  const j=journeyStats();
+  if(j.km>=0.05 || j.durSec>=60){
+    const dist=j.km>=1?`${j.km.toFixed(1)} km`:`${Math.round(j.km*1000)} m`;
+    facts.push(`<span class="chip">${svg('<path d="M4 20l6-15 3 9 3-5 4 11z"/>')}<span class="k">journey</span> ${dist} · ${fmtDur(j.durSec)}</span>`);
+  }
+  // altitude — only when notably off the ground
+  if(loc && loc.alt!=null && Math.abs(loc.alt)>=80)
+    facts.push(`<span class="chip">${svg('<path d="M3 20l5-10 4 6 3-4 6 8z"/>')}<span class="k">alt</span> ${Math.round(loc.alt).toLocaleString()} m</span>`);
   $('#facts').innerHTML=facts.join('');
+  renderBattery(s.battery);
   // now playing
   if(s.nowPlaying && (s.nowPlaying.title||s.nowPlaying.artist)){
     $('#np').style.display='flex'; $('#npTitle').textContent=s.nowPlaying.title||s.nowPlaying.artist;
     $('#npArtist').textContent=[s.nowPlaying.artist,s.nowPlaying.app].filter(Boolean).join(' · ');
   } else $('#np').style.display='none';
+  if($('#infomodal').classList.contains('open')) fillInfo();
+}
+// The details modal (ⓘ): the diagnostic readouts kept off the main HUD.
+function fillInfo(){
+  const s=state.lastStatus||{}, rows=[];
+  const add=(k,v)=>{ if(v!=null&&v!=='') rows.push(`<div class="r"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`); };
+  add('Session', state.sid||'—');
+  add('State', state.live?'Live':'Replay');
+  add('Last signal', state.last?fmtAgo(state.last):'—');
+  if(s.battery&&s.battery.percent!=null) add('Battery', Math.round(s.battery.percent)+'%'+(s.battery.charging?' · charging':''));
+  if(s.gnss) add('Satellites', `${s.gnss.used}/${s.gnss.inView} in view`);
+  if(s.location&&s.location.acc!=null) add('GPS accuracy', `±${Math.round(s.location.acc)} m`);
+  if(s.location&&s.location.alt!=null) add('Altitude', `${Math.round(s.location.alt).toLocaleString()} m`);
+  if(s.wifi) add('Wi-Fi', `${s.wifi.count} networks`);
+  const j=journeyStats(); if(j.km>0) add('Distance', j.km>=1?j.km.toFixed(2)+' km':Math.round(j.km*1000)+' m');
+  add('Media', state.items.length?state.items.length+' items':null);
+  $('#inforows').innerHTML=rows.join('')||'<div class="r"><span class="k">No details yet</span></div>';
 }
 function renderScene(list){
   if(!list||!list.length) return;
@@ -459,6 +560,11 @@ function refreshMode(){
   $('#badge .st').textContent=live?'LIVE':'REPLAY';
   const dur=Math.max(0,(state.last-state.first)); const mins=Math.round(dur/60000);
   $('#subline').textContent=(state.sid||'')+'  ·  '+(live?('live · '+fmtAgo(state.last)):(mins+' min · '+new Date(state.first).toLocaleString()));
+  // Staleness: a "live" session with no signal for >2 min is likely stalled (battery died, lost
+  // connectivity, or interrupted). Surface how long it's been quiet; >4 min it drops to REPLAY above.
+  const stale=$('#stale'), gap=now-state.last;
+  if(live && gap>120000){ stale.className='stale show'; stale.textContent='⚠ no signal for '+fmtAgo(state.last).replace(' ago',''); }
+  else stale.className='stale';
   setPill();
   if(state.mode==='replay') startReplay(); else clearInterval(state.replayT);
 }
@@ -539,6 +645,11 @@ $('#mapwrap').addEventListener('click',()=>{ if(!mapExpanded) expandMap(); });
 $('#mapexpand').addEventListener('click',e=>{ e.stopPropagation(); expandMap(); });
 $('#mapclose').addEventListener('click',e=>{ e.stopPropagation(); collapseMap(); });
 $('#maptheme').addEventListener('click',e=>{ e.stopPropagation(); setTiles(mapTheme==='dark'?'light':'dark'); });
+
+// details modal (ⓘ) — satellites, wifi, accuracy, battery… kept off the main HUD
+$('#btnInfo').addEventListener('click',()=>{ fillInfo(); $('#infomodal').classList.add('open'); });
+$('#infoclose').addEventListener('click',()=>$('#infomodal').classList.remove('open'));
+$('#infomodal').addEventListener('click',e=>{ if(e.target.id==='infomodal') $('#infomodal').classList.remove('open'); });
 
 // boot
 initMap();

@@ -621,9 +621,10 @@ app.get('/api/status', requireAdmin, async (req, res) => {
     `select data, wall from records where stream=$1 and data ? $2${s ? ' and session_id=$3' : ''} order by wall desc limit 1`,
     s ? [stream, field, s] : [stream, field])).rows[0] || null;
   void sf;
-  const [activity, loc, wifi, gnss, scene, media, speech] = await Promise.all([
+  const [activity, loc, wifi, gnss, scene, media, speech, power] = await Promise.all([
     latest('motion_activity'), latest('location'), latest('wifi'), latestSky(),
     latestWith('audio_scene', 'tags'), latestWith('media', 'package'), latestWith('speech', 'text'),
+    latestWith('power', 'percent'),
   ]);
   const totals = s
     ? (await pool.query(
@@ -638,7 +639,12 @@ app.get('/api/status', requireAdmin, async (req, res) => {
               (select coalesce(sum(bytes),0) from files) bytes`)).rows[0];
   res.json({
     activity: activity && { label: activity.data.label, engine: activity.data.engine, wall: Number(activity.wall) },
-    location: loc && { lat: loc.data.lat, lon: loc.data.lon, acc: loc.data.acc, wall: Number(loc.wall) },
+    location: loc && { lat: loc.data.lat, lon: loc.data.lon, acc: loc.data.acc,
+      alt: (loc.data.alt != null ? Number(loc.data.alt) : null),
+      speed: (loc.data.speed != null ? Number(loc.data.speed) : null), wall: Number(loc.wall) },
+    battery: power ? { percent: Number(power.data.percent),
+      charging: Number(power.data.plugged) > 0 || /charg/i.test(String(power.data.status || '')),
+      wall: Number(power.wall) } : null,
     wifi: wifi && { count: wifi.data.count, wall: Number(wifi.wall) },
     gnss: gnss ? { used: gnss.data.usedInFix, inView: gnss.data.inView, wall: Number(gnss.wall) } : null,
     scene: (scene && Array.isArray(scene.data.tags) && scene.data.tags[0])
