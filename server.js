@@ -74,7 +74,8 @@ app.get('/admin/validate', async (req, res) => {
     // Per-stream chunk analysis + disk existence. Chunk index is the trailing _NNNNNN in the filename.
     // A chunk can have >1 file (e.g. audio: a .aac + a .anchors sidecar share the same index), so gaps
     // are computed over the SET of indices, and files vs chunks are reported separately.
-    const idxRe = /_(\d+)(?:\.|$)/;   // first _NNNNNN; tolerant of multi-part extensions (.accel.vstream)
+    const idxRe = /_(\d+)/;   // first _NNNNNN = chunk index (stem has no other underscore); tolerant of
+    //                          both `_000000.jsonl` and motion's `_000000_accel.vstream` writer suffix.
     const extRe = /\.([^.]+)$/;
     const byStream = {};
     let onDisk = 0; const missingDisk = [];
@@ -120,7 +121,7 @@ app.get('/admin/validate', async (req, res) => {
           if (!line) continue;
           let o; try { o = JSON.parse(line); } catch (_) { continue; }
           if (o.t === 'chunk_close') {
-            const m = /_(\d+)(?:\.|$)/.exec(o.stem || o.file || '');
+            const m = /_(\d+)/.exec(o.stem || o.file || '');
             if (m && Number(o.bytes) > 0) {
               (manifestContent[o.stream] || (manifestContent[o.stream] = new Set())).add(parseInt(m[1], 10));
             }
@@ -202,7 +203,6 @@ app.get('/admin/validate', async (req, res) => {
       capture: { closedDetected, sessionClose, globalTicks, sparseStreams },  // sparse = expected, informational
       manifestPresent,
       alignment: { aligned: manifestAligned, misaligned, serverOnlyStreams, perStream },
-      _samples: Object.fromEntries(Object.entries(byStream).map(([k, v]) => [k, v.sample])),
       streams: streams.map((s) => ({ ...s, indexedRecords: indexed[s.stream] || 0 })),
       verdict,
       reasons: [
