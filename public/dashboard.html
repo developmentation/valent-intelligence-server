@@ -357,10 +357,11 @@ function connectStream(){
 initMap();
 wirePlayer();
 loadSessions().then(refresh).then(connectStream);
-$('#session').addEventListener('change', refresh);
-// Slow safety-net polling in case SSE is blocked by a proxy; SSE is the primary path.
-setInterval(()=>{ loadSessions(); loadStatus(); }, 30000);
-setInterval(()=>{ if(!lastEventMs || Date.now()-lastEventMs>120000){ loadTrack(); loadGallery(); } }, 60000);
+$('#session').addEventListener('change', ()=>{ firstLoad=false; refresh(); });
+// Reliable baseline: refresh everything (incl. audio clip count + gallery) every 15s, so the view
+// stays current even when SSE is quiet or drops — common on spotty/in-flight links. SSE on top gives
+// the instant nudges (new photo in ~2s, fresh map head). Playback isn't interrupted by a list refresh.
+setInterval(()=>{ loadSessions(); refresh(); }, 15000);
 </script>
 </body>
 </html>
