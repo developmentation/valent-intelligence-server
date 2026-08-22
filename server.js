@@ -424,12 +424,13 @@ app.get('/login', (req, res) => {
   res.type('html').send(loginPage(req.query.e ? 'Wrong password.' : '', safePath(req.query.next)));
 });
 app.post('/login', (req, res) => {
-  if (ADMIN_PASSWORD && req.body.password === ADMIN_PASSWORD) {
+  // `next` rides the form action's query string (always parsed), with the hidden body field as backup.
+  const nx = safePath(req.query.next) || safePath(req.body && req.body.next);
+  if (ADMIN_PASSWORD && req.body && req.body.password === ADMIN_PASSWORD) {
     setAuthCookies(res);
-    return res.redirect(safePath(req.body.next) || '/');
+    return res.redirect(nx || '/');
   }
-  const q = safePath(req.body.next) ? '&next=' + encodeURIComponent(req.body.next) : '';
-  return res.redirect('/login?e=1' + q);
+  return res.redirect('/login?e=1' + (nx ? '&next=' + encodeURIComponent(nx) : ''));
 });
 app.post('/logout', (_req, res) => {
   res.append('Set-Cookie', 'va=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure');
@@ -776,13 +777,15 @@ app.get('/live', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 
 
 // ---- pages ----
 function loginPage(err, next) {
-  const nx = safePath(next).replace(/"/g, '%22').replace(/</g, '%3C');
+  const clean = safePath(next);
+  const action = '/login' + (clean ? '?next=' + encodeURIComponent(clean) : '');
+  const nx = clean.replace(/"/g, '%22').replace(/</g, '%3C');
   return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Valent — sign in</title><style>body{background:#0d0d0d;color:#eee;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0}
 form{background:#1a1a19;padding:28px;border-radius:14px;border:1px solid #2c2c2a;width:280px}
 h1{font-size:16px;margin:0 0 14px}input{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #333;background:#111;color:#fff;margin-bottom:10px}
 button{width:100%;padding:10px;border:0;border-radius:8px;background:#3987e5;color:#fff;font-weight:600;cursor:pointer}.e{color:#e66767;font-size:12px;margin-bottom:8px}</style>
-<form method=post action=/login><h1>Valent Intelligence</h1>${err ? `<div class=e>${err}</div>` : ''}
+<form method=post action="${action}"><h1>Valent Intelligence</h1>${err ? `<div class=e>${err}</div>` : ''}
 ${nx ? `<input type=hidden name=next value="${nx}">` : ''}
 <input type=password name=password placeholder=Password autofocus><button>Sign in</button></form>`;
 }
