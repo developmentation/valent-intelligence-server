@@ -83,6 +83,13 @@ app.post('/ingest/live', express.json({ limit: '512kb' }), (req, res) => {
   if (t.pts.length > LIVE_CAP) t.pts.splice(0, t.pts.length - LIVE_CAP);
   if (t.pts.length) t.latest = t.pts[t.pts.length - 1];
   if (b.scene && b.scene.label) t.scene = { label: b.scene.label, score: b.scene.score, wall: Number(b.scene.wall) || Date.now() };
+  // Now-playing rides the live lane too, so /live shows the CURRENT track even when the bulk lane
+  // (which carries the durable `media` records) is minutes/hours behind on a big session.
+  if (b.nowPlaying && (b.nowPlaying.title || b.nowPlaying.artist)) {
+    t.nowPlaying = { title: b.nowPlaying.title || null, artist: b.nowPlaying.artist || null,
+      album: b.nowPlaying.album || null, app: b.nowPlaying.app || null,
+      state: b.nowPlaying.state || null, wall: Number(b.nowPlaying.wall) || Date.now() };
+  }
   t.updated = Date.now();
   if (Math.random() < 0.05) pruneLive();
   // Register the session immediately (before its first bulk batch) so /api/sessions — and thus /live +
@@ -650,21 +657,30 @@ app.get('/api/status', requireAdmin, async (req, res) => {
               (select count(*) from files where kind='media') media,
               (select coalesce(sum(record_count),0) from sessions) records,
               (select coalesce(sum(bytes),0) from files) bytes`)).rows[0];
+  // Prefer the LIVE tail (in-memory, seconds fresh) over the bulk `records` (which can lag hours behind
+  // on a big session uploading over mobile). This is what keeps /live's HUD in step with the phone.
+  const lt = s ? liveTracks.get(s) : null;
+  const bulkLoc = loc && { lat: loc.data.lat, lon: loc.data.lon, acc: loc.data.acc,
+    alt: (loc.data.alt != null ? Number(loc.data.alt) : null),
+    speed: (loc.data.speed != null ? Number(loc.data.speed) : null), wall: Number(loc.wall) };
+  const liveLoc = lt && lt.latest && { lat: lt.latest.lat, lon: lt.latest.lon, acc: lt.latest.acc,
+    alt: null, speed: lt.latest.speed != null ? Number(lt.latest.speed) : null, wall: Number(lt.latest.wall) };
+  const fresher = (a, b2) => (a && (!b2 || (Number(a.wall) || 0) >= (Number(b2.wall) || 0))) ? a : b2;
+  const bulkScene = (scene && Array.isArray(scene.data.tags) && scene.data.tags[0])
+    ? { label: scene.data.tags[0].label, score: scene.data.tags[0].score, wall: Number(scene.wall) } : null;
+  const bulkNP = (media && (media.data.title || media.data.artist))
+    ? { title: media.data.title || null, artist: media.data.artist || null, album: media.data.album || null,
+        app: media.data.package || null, state: media.data.state || null, wall: Number(media.wall) } : null;
   res.json({
     activity: activity && { label: activity.data.label, engine: activity.data.engine, wall: Number(activity.wall) },
-    location: loc && { lat: loc.data.lat, lon: loc.data.lon, acc: loc.data.acc,
-      alt: (loc.data.alt != null ? Number(loc.data.alt) : null),
-      speed: (loc.data.speed != null ? Number(loc.data.speed) : null), wall: Number(loc.wall) },
+    location: fresher(liveLoc, bulkLoc),
     battery: power ? { percent: Number(power.data.percent),
       charging: Number(power.data.plugged) > 0 || /charg/i.test(String(power.data.status || '')),
       wall: Number(power.wall) } : null,
     wifi: wifi && { count: wifi.data.count, wall: Number(wifi.wall) },
     gnss: gnss ? { used: gnss.data.usedInFix, inView: gnss.data.inView, wall: Number(gnss.wall) } : null,
-    scene: (scene && Array.isArray(scene.data.tags) && scene.data.tags[0])
-      ? { label: scene.data.tags[0].label, score: scene.data.tags[0].score, wall: Number(scene.wall) } : null,
-    nowPlaying: (media && (media.data.title || media.data.artist))
-      ? { title: media.data.title || null, artist: media.data.artist || null, album: media.data.album || null,
-          app: media.data.package || null, state: media.data.state || null, wall: Number(media.wall) } : null,
+    scene: fresher(lt && lt.scene, bulkScene),
+    nowPlaying: fresher(lt && lt.nowPlaying, bulkNP),
     speech: (speech && speech.data.text)
       ? { text: speech.data.text, wall: Number(speech.wall) } : null,
     totals,

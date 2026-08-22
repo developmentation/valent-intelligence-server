@@ -319,9 +319,19 @@ function fitTrack(){
 }
 function drawTrack(pts){
   trackLayer.clearLayers(); headMarker=null;
-  const line=pts.filter(p=>p.suspect!=='true').map(p=>[p.lat,p.lon]);
-  if(line.length>1) L.polyline(line,{color:'#ff5a3c',weight:mapExpanded?3:2.5,opacity:.85}).addTo(trackLayer);
-  if(line.length && !state.pinnedLoc){ const last=line[line.length-1]; moveHead(last[0],last[1]); }
+  const clean=pts.filter(p=>p.suspect!=='true'&&p.lat!=null);
+  // Draw as SEGMENTS, breaking where consecutive fixes are far apart in time or distance — e.g. the
+  // un-uploaded stretch between the durable (bulk) track and the fresh live tail — so we never draw a
+  // false straight diagonal across a gap. The pieces rejoin naturally as the bulk lane catches up.
+  const w=mapExpanded?3:2.5; let seg=[];
+  const flush=()=>{ if(seg.length>1) L.polyline(seg.map(p=>[p.lat,p.lon]),{color:'#ff5a3c',weight:w,opacity:.85}).addTo(trackLayer); seg=[]; };
+  for(const p of clean){
+    if(seg.length){ const a=seg[seg.length-1];
+      if(Math.abs((p.wall||0)-(a.wall||0))>180000 || havM([a.lat,a.lon],[p.lat,p.lon])>3000) flush(); }
+    seg.push(p);
+  }
+  flush();
+  if(clean.length && !state.pinnedLoc){ const last=clean[clean.length-1]; moveHead(last.lat,last.lon); }
   if(!mapExpanded) fitTrack();   // mini map: always frame the whole path
 }
 function setMapInteractive(on){
