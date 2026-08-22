@@ -300,7 +300,7 @@ async function handleIngest(headers, rawBody) {
          bytes = coalesce((select sum(bytes) from files f where f.session_id=s.id),0),
          file_count = coalesce((select count(*) from files f where f.session_id=s.id),0),
          -- True capture volume from the streams catalog (which counts ALL records), NOT the
-         -- now-selective `records` index which would undercount. `greatest` keeps the historical
+         -- now-selective records index which would undercount. greatest() keeps the historical
          -- snapshot for sessions ingested before the catalog existed (no regression), and grows
          -- correctly for new sessions.
          record_count = greatest(coalesce(s.record_count,0),
