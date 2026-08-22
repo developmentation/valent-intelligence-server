@@ -279,16 +279,25 @@ function pushFeed(ev){
 // ---- SSE: the real-time stream. EventSource auto-reconnects, so a Wi-Fi switch self-heals. ----
 let refreshT=null;
 function scheduleRefresh(){ clearTimeout(refreshT); refreshT=setTimeout(()=>{ refresh(); loadSessions(); }, 1200); }
+let liveT=null;
+function scheduleLiveRefresh(){ clearTimeout(liveT); liveT=setTimeout(()=>{ loadTrack(); loadStatus(); loadScene(); }, 800); }
 function connectStream(){
   const es = new EventSource('/api/stream', { withCredentials:true });
   es.onopen = ()=> setLive(lastEventMs?'streaming':'streaming');
   es.onerror = ()=> setLive('reconnecting');   // browser retries automatically (retry: 3000)
   es.onmessage = (e)=>{
     let ev; try{ ev=JSON.parse(e.data); }catch(_){ return; }
-    if(ev.type!=='ingest') return;
-    evCount++; lastEventMs=Date.now(); setLive('streaming'); pushFeed(ev);
-    const sel=$('#session').value;
-    if(!sel || sel===ev.session) scheduleRefresh();
+    const sel=$('#session').value; const forUs = !sel || sel===ev.session;
+    if(ev.type==='ingest'){
+      evCount++; lastEventMs=Date.now(); setLive('streaming'); pushFeed(ev);
+      if(forUs) scheduleRefresh();
+    } else if(ev.type==='live'){
+      lastEventMs=Date.now(); setLive('streaming');
+      if(forUs) scheduleLiveRefresh();          // fast: just the map head + scene
+    } else if(ev.type==='photo'){
+      lastEventMs=Date.now(); setLive('streaming');
+      if(forUs) loadGallery();                  // instant: new photo appears immediately
+    }
   };
 }
 

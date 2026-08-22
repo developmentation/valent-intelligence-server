@@ -23,6 +23,18 @@ function sseBroadcast(event) {
   for (const res of sseClients) { try { res.write(line); } catch (_) { /* dropped on next close */ } }
 }
 
+// ---- Live lane: an in-memory fresh tail per session, fed by the tiny /ingest/live posts. This is a
+// low-latency OVERLAY on top of the durable, complete bulk track — not a second source of truth. The
+// bulk lane still persists every fix; this just lets the map head be ~10s fresh instead of a chunk
+// behind. Ephemeral by design (lost on restart, which is fine — the bulk lane has it all).
+const liveTracks = new Map();   // session -> { pts:[{lat,lon,wall,acc,speed}], latest, scene, updated }
+const LIVE_CAP = 800;
+const LIVE_TTL_MS = 15 * 60 * 1000;
+function pruneLive() {
+  const cutoff = Date.now() - LIVE_TTL_MS;
+  for (const [k, t] of liveTracks) if (t.updated < cutoff) liveTracks.delete(k);
+}
+
 // ---- health (no auth) ----
 app.get('/health', async (_req, res) => {
   let db = false;
@@ -50,6 +62,53 @@ app.post('/ingest', express.raw({ type: () => true, limit: '64mb' }), async (req
     console.error('ingest error', e);
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
+});
+
+// ---- live lane: current GPS fixes + scene (tiny JSON, ~every 10s, best-effort, low-latency) ----
+app.post('/ingest/live', express.json({ limit: '512kb' }), (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const b = req.body || {};
+  const sid = String(b.session || '');
+  if (!sid) return res.status(400).json({ ok: false, error: 'session required' });
+  let t = liveTracks.get(sid);
+  if (!t) { t = { pts: [], latest: null, scene: null, updated: 0 }; liveTracks.set(sid, t); }
+  let added = 0;
+  for (const p of (Array.isArray(b.points) ? b.points : [])) {
+    if (typeof p.lat !== 'number' || typeof p.lon !== 'number') continue;
+    const wall = Number(p.wall) || 0;
+    if (t.pts.length && wall && wall <= t.pts[t.pts.length - 1].wall) continue;   // keep in order, dedup
+    t.pts.push({ lat: p.lat, lon: p.lon, wall, acc: p.acc ?? null, speed: p.speed ?? null });
+    added++;
+  }
+  if (t.pts.length > LIVE_CAP) t.pts.splice(0, t.pts.length - LIVE_CAP);
+  if (t.pts.length) t.latest = t.pts[t.pts.length - 1];
+  if (b.scene && b.scene.label) t.scene = { label: b.scene.label, score: b.scene.score, wall: Number(b.scene.wall) || Date.now() };
+  t.updated = Date.now();
+  if (Math.random() < 0.05) pruneLive();
+  sseBroadcast({ type: 'live', session: sid, lat: t.latest && t.latest.lat, lon: t.latest && t.latest.lon, wall: t.latest && t.latest.wall, scene: t.scene, added });
+  res.json({ ok: true, added, held: t.pts.length });
+});
+
+// ---- live lane: a just-captured photo (raw bytes), stored immediately + gallery-broadcast ----
+// Disk-backed today via the storage seam; swap to a presigned R2 PUT later without touching callers.
+app.post('/ingest/live/photo', express.raw({ type: () => true, limit: '32mb' }), async (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const sid = String(req.header('x-session') || '');
+  const fname = String(req.header('x-filename') || '').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const stream = String(req.header('x-stream') || 'camera').replace(/[^a-z0-9_]/gi, '') || 'camera';
+  if (!sid || !fname || !req.body || !req.body.length) return res.status(400).json({ ok: false, error: 'x-session + x-filename + body required' });
+  try {
+    const key = `${sid}/${stream}/${fname}`;
+    await storage.put(key, req.body);
+    const sha = crypto.createHash('sha256').update(req.body).digest('hex');
+    await pool.query(
+      `insert into files (session_id, stream, filename, path, sha256, bytes, kind)
+       values ($1,$2,$3,$4,$5,$6,'media') on conflict (sha256) do nothing`,
+      [sid, stream, fname, key, sha, req.body.length]);
+    const url = storage.publicUrl(key);
+    sseBroadcast({ type: 'photo', session: sid, url, filename: fname, at: Date.now() });
+    res.json({ ok: true, url });
+  } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
 });
 
 // ---- diagnostics (token-gated, no login) ----
@@ -376,7 +435,21 @@ app.get('/api/track', requireAdmin, async (req, res) => {
      select session_id, wall, lat, lon, acc, speed, suspect from pts
      where rn = 1 or rn = cnt or rn % greatest(1, (cnt / ${perSession})::int) = 0
      order by session_id, wall`, args);
-  res.json(q.rows.filter(r => r.lat != null && r.lon != null));
+  const rows = q.rows.filter(r => r.lat != null && r.lon != null);
+  // Merge the fresh in-memory live tail (≤~10s old) on top of the durable DB track, so the map head
+  // is current rather than a chunk behind. Only points newer than the session's last DB fix are added.
+  const mergeLive = (sid) => {
+    const t = liveTracks.get(sid);
+    if (!t || !t.pts.length) return;
+    let lastWall = 0;
+    for (const r of rows) if (r.session_id === sid) { const w = Number(r.wall) || 0; if (w > lastWall) lastWall = w; }
+    for (const p of t.pts) {
+      if ((p.wall || 0) > lastWall) rows.push({ session_id: sid, wall: p.wall, lat: p.lat, lon: p.lon, acc: p.acc, speed: p.speed, suspect: null, live: true });
+    }
+  };
+  if (s) mergeLive(s); else for (const sid of liveTracks.keys()) mergeLive(sid);
+  rows.sort((a, b) => (a.session_id < b.session_id ? -1 : a.session_id > b.session_id ? 1 : (Number(a.wall) || 0) - (Number(b.wall) || 0)));
+  res.json(rows);
 });
 
 // Every stream captured (all sessions or one), for a comprehensive live view — not just the 4 the
