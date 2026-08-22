@@ -16,6 +16,13 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const APK_DIR = process.env.APK_DIR || '/data/apk';
 fs.mkdirSync(APK_DIR, { recursive: true });
 
+// ---- Server-Sent Events: push a live nudge to the visualizer the instant chunks land ----
+const sseClients = new Set();
+function sseBroadcast(event) {
+  const line = `data: ${JSON.stringify(event)}\n\n`;
+  for (const res of sseClients) { try { res.write(line); } catch (_) { /* dropped on next close */ } }
+}
+
 // ---- health (no auth) ----
 app.get('/health', async (_req, res) => {
   let db = false;
@@ -34,6 +41,10 @@ app.post('/ingest', express.raw({ type: () => true, limit: '64mb' }), async (req
     const h = {};
     for (const k of Object.keys(req.headers)) h[k.toLowerCase()] = req.headers[k];
     const out = await handleIngest(h, req.body);
+    // Live nudge to any connected visualizer: which session grew, by how much.
+    if (out.status >= 200 && out.status < 300 && out.body && out.body.session) {
+      sseBroadcast({ type: 'ingest', session: out.body.session, storedNew: out.body.storedNew, records: out.body.records, members: out.body.members, at: Date.now() });
+    }
     res.status(out.status).json(out.body);
   } catch (e) {
     console.error('ingest error', e);
@@ -288,6 +299,22 @@ app.post('/logout', (_req, res) => {
 });
 
 // ---- viewer APIs (admin only) ----
+// Live event stream: the visualizer opens this once and gets an {type:'ingest', session, ...} event
+// each time a batch lands, so it can refresh the affected session in near-real-time.
+app.get('/api/stream', requireAdmin, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',   // don't let any proxy buffer the stream
+  });
+  res.write('retry: 3000\n');
+  res.write(': connected\n\n');
+  sseClients.add(res);
+  const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch (_) { /* closing */ } }, 25000);
+  req.on('close', () => { clearInterval(hb); sseClients.delete(res); });
+});
+
 app.get('/api/sessions', requireAdmin, async (_req, res) => {
   const q = await pool.query(
     `select id, device, first_wall, last_wall, bytes, file_count, record_count, updated_at
