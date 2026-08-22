@@ -36,6 +36,12 @@
   .abchip .v{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:66vw}
   .abchip.playing{border-color:var(--good)}
   .abchip.hearing{border-color:var(--violet)}
+  .scenestrip{margin:8px 18px 0;display:flex;gap:6px;overflow-x:auto;align-items:center;padding-bottom:2px}
+  .scenestrip .lbl{font-size:9px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;flex:none;margin-right:2px}
+  .stag{background:#111;border:1px solid var(--line);border-radius:20px;padding:5px 11px;font-size:11px;white-space:nowrap;color:var(--mut);flex:none}
+  .stag.cur{border-color:var(--violet);color:var(--ink)}
+  .tbody{padding:12px 14px;max-height:240px;overflow:auto;font-size:14px;line-height:1.65;color:var(--ink)}
+  .tbody .seg{color:var(--mut)}.tbody .seg.last{color:var(--ink)}
   .grid{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:10px 18px 24px}
   @media(max-width:900px){.grid{grid-template-columns:1fr}}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
@@ -79,7 +85,10 @@
 
 <div class="status" id="status"></div>
 <div class="audiobar" id="audiobar"></div>
+<div class="scenestrip" id="scenestrip"></div>
 <div class="feed" id="feed"><div class="row">Waiting for the live stream…</div></div>
+
+<div class="panel tpanel" id="tpanelwrap" style="margin:10px 18px 0;display:none"><h2><span>🗣 Transcript</span><span id="tmeta"></span></h2><div class="tbody" id="transcript"></div></div>
 
 <div class="panel strwrap"><h2><span>Streams — everything captured</span><span id="strmeta"></span></h2><div class="strgrid" id="streams"></div></div>
 
@@ -99,6 +108,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const $ = s => document.querySelector(s);
+const esc = t => String(t==null?'':t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let map, trackLayer;
 let knownGallery = new Set();          // urls already shown, so new ones can flash
 let evCount = 0, lastEventMs = 0;
@@ -124,7 +134,8 @@ async function loadSessions(){
 }
 function setChip(el, val){ if(el && el.textContent !== String(val)){ el.textContent = val; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } }
 async function loadStatus(){
-  const s = await (await fetch('/api/status')).json();
+  const sess = $('#session').value;
+  const s = await (await fetch('/api/status'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
   const t = s.totals||{};
   const chips = [
     ['Doing', s.activity ? s.activity.label : '—', s.activity && s.activity.wall],
@@ -135,15 +146,34 @@ async function loadStatus(){
     ['Records', Number(t.records||0).toLocaleString(), null],
   ];
   $('#status').innerHTML = chips.map(([k,v,w])=>`<div class="chip"><div class="k">${k}</div><div class="v">${v}</div>${w?`<div class="k" style="margin-top:3px">${fmtAgo(w)}</div>`:''}</div>`).join('');
-  // Live audio banner: what's being heard, what's playing, and the latest transcript.
-  const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  // Live audio banner: what's being heard + what's playing (the transcript has its own panel).
   const ab=[];
   if(s.scene) ab.push(`<div class="abchip hearing"><span class="ic">🔊</span><div><div class="k">Now hearing · ${fmtAgo(s.scene.wall)}</div><div class="v">${esc(s.scene.label)} · ${Math.round((s.scene.score||0)*100)}%</div></div></div>`);
   if(s.nowPlaying){ const np=s.nowPlaying; const t=[np.title,np.artist].filter(Boolean).map(esc).join(' — ');
     const app=np.app?np.app.split('.').pop():''; const playing=(np.state===3||np.state==='playing');
     ab.push(`<div class="abchip${playing?' playing':''}"><span class="ic">🎵</span><div><div class="k">Now playing${app?' · '+esc(app):''}</div><div class="v">${t||'—'}</div></div></div>`); }
-  if(s.speech) ab.push(`<div class="abchip"><span class="ic">💬</span><div><div class="k">Transcript · ${fmtAgo(s.speech.wall)}</div><div class="v">${esc(s.speech.text)}</div></div></div>`);
   $('#audiobar').innerHTML = ab.join('');
+}
+async function loadScene(){
+  const sess=$('#session').value;
+  const rows=await (await fetch('/api/scene'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
+  const strip=$('#scenestrip');
+  if(!Array.isArray(rows)||!rows.length){ strip.innerHTML=''; return; }
+  const seq=[]; for(const r of rows){ const last=seq[seq.length-1];
+    if(last && last.label===r.label){ last.wall=r.wall; last.score=Math.max(last.score,r.score||0); } else seq.push({label:r.label,score:r.score||0,wall:r.wall}); }
+  const recent=seq.slice(-16);
+  strip.innerHTML='<span class="lbl">Heard · 3 min</span>'+recent.map((t,i)=>`<span class="stag${i===recent.length-1?' cur':''}">${esc(t.label)}</span>`).join('');
+}
+async function loadTranscript(){
+  const sess=$('#session').value;
+  const r=await (await fetch('/api/transcript'+(sess?`?session=${encodeURIComponent(sess)}`:''))).json();
+  const wrap=$('#tpanelwrap'), body=$('#transcript');
+  if(!r.segments || !r.segments.length){ wrap.style.display='none'; return; }
+  wrap.style.display='';
+  $('#tmeta').textContent = r.count.toLocaleString()+' segments';
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+  body.innerHTML = r.segments.map((seg,i)=>`<span class="seg${i===r.segments.length-1?' last':''}">${esc(seg.text)} </span>`).join('');
+  if(atBottom) body.scrollTop = body.scrollHeight;   // keep pinned to the newest unless scrolled up
 }
 function kmBetween(a,b){ const R=6371,d2r=Math.PI/180;
   const dLat=(b.lat-a.lat)*d2r, dLon=(b.lon-a.lon)*d2r, la=a.lat*d2r, lb=b.lat*d2r;
@@ -221,7 +251,7 @@ function renderLb(){
 document.addEventListener('keydown', e=>{ if(!$('#lightbox').classList.contains('open')) return;
   if(e.key==='Escape') closeLb(); else if(e.key==='ArrowLeft') navLb(-1); else if(e.key==='ArrowRight') navLb(1); });
 $('#lightbox') && $('#lightbox').addEventListener('click', e=>{ if(e.target.id==='lightbox') closeLb(); });
-async function refresh(){ await Promise.all([loadStatus(), loadStreams(), loadTrack(), loadGallery()]); }
+async function refresh(){ await Promise.all([loadStatus(), loadScene(), loadTranscript(), loadStreams(), loadTrack(), loadGallery()]); }
 
 // ---- live status indicator ----
 function setLive(state){

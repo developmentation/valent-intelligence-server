@@ -322,6 +322,39 @@ app.get('/api/sessions', requireAdmin, async (_req, res) => {
   res.json(q.rows);
 });
 
+// Rolling audio-scene history (default last 3 min) — the top tag per frame, newest last, so the
+// dashboard can show "what we've heard" like the phone rather than a single instantaneous label.
+app.get('/api/scene', requireAdmin, async (req, res) => {
+  const s = req.query.session; const args = [];
+  let where = `stream='audio_scene' and data ? 'tags'`;
+  if (s) { args.push(s); where += ` and session_id=$1`; }
+  const mins = Math.min(30, Math.max(1, parseInt(req.query.mins, 10) || 3));
+  const q = await pool.query(`select data, wall from records where ${where} order by wall desc limit 600`, args);
+  const cutoff = Date.now() - mins * 60000;
+  const out = [];
+  for (const r of q.rows) {
+    const w = Number(r.wall);
+    if (w < cutoff) break;
+    const tags = Array.isArray(r.data.tags) ? r.data.tags : [];
+    const t = tags.find((x) => !x.secondary) || tags[0];
+    if (t) out.push({ label: t.label, score: t.score, wall: w });
+  }
+  res.json(out.reverse());   // oldest → newest
+});
+
+// Full cumulative transcript for a session (the running narrative), oldest→newest, plus the joined text.
+app.get('/api/transcript', requireAdmin, async (req, res) => {
+  const s = req.query.session; const args = [];
+  let where = `stream='speech' and data ? 'text'`;
+  if (s) { args.push(s); where += ` and session_id=$1`; }
+  const q = await pool.query(
+    `select data, wall from records where ${where} order by wall asc limit 8000`, args);
+  const segs = q.rows
+    .map((r) => ({ text: (r.data.text || '').trim(), wall: Number(r.wall) }))
+    .filter((x) => x.text);
+  res.json({ count: segs.length, text: segs.map((x) => x.text).join(' '), segments: segs.slice(-600) });
+});
+
 app.get('/api/track', requireAdmin, async (req, res) => {
   const s = req.query.session;
   const args = [];
@@ -383,24 +416,38 @@ app.get('/api/gallery', requireAdmin, async (req, res) => {
   })));
 });
 
-app.get('/api/status', requireAdmin, async (_req, res) => {
+app.get('/api/status', requireAdmin, async (req, res) => {
+  // Scope to a selected session so the cards show THAT session's live state, not a stale global
+  // latest (which could be an old session's record, e.g. an 11-day-old transcript).
+  const s = req.query.session || null;
+  const sf = s ? ' and session_id=$2' : '';   // $2 in latest(); adjusted per helper below
   const latest = async (stream) => (await pool.query(
-    `select data, wall from records where stream=$1 order by wall desc nulls last limit 1`, [stream])).rows[0] || null;
+    `select data, wall from records where stream=$1${s ? ' and session_id=$2' : ''} order by wall desc nulls last limit 1`,
+    s ? [stream, s] : [stream])).rows[0] || null;
   // gnss writes frequent kind:"epoch" measurements + occasional kind:"sky" status; the satellite
   // counts live only on the sky record, so fetch the latest of THOSE, not just the latest gnss row.
   const latestSky = async () => (await pool.query(
-    `select data, wall from records where stream='gnss' and data->>'kind'='sky' order by wall desc nulls last limit 1`)).rows[0] || null;
+    `select data, wall from records where stream='gnss' and data->>'kind'='sky'${s ? ' and session_id=$1' : ''} order by wall desc nulls last limit 1`,
+    s ? [s] : [])).rows[0] || null;
   const latestWith = async (stream, field) => (await pool.query(
-    `select data, wall from records where stream=$1 and data ? $2 order by wall desc limit 1`, [stream, field])).rows[0] || null;
+    `select data, wall from records where stream=$1 and data ? $2${s ? ' and session_id=$3' : ''} order by wall desc limit 1`,
+    s ? [stream, field, s] : [stream, field])).rows[0] || null;
+  void sf;
   const [activity, loc, wifi, gnss, scene, media, speech] = await Promise.all([
     latest('motion_activity'), latest('location'), latest('wifi'), latestSky(),
     latestWith('audio_scene', 'tags'), latestWith('media', 'package'), latestWith('speech', 'text'),
   ]);
-  const totals = (await pool.query(
-    `select (select count(*) from sessions) sessions,
-            (select count(*) from files where kind='media') media,
-            (select coalesce(sum(record_count),0) from sessions) records,
-            (select coalesce(sum(bytes),0) from files) bytes`)).rows[0];
+  const totals = s
+    ? (await pool.query(
+      `select 1 sessions,
+              (select count(*) from files where kind='media' and session_id=$1) media,
+              (select coalesce(record_count,0) from sessions where id=$1) records,
+              (select coalesce(sum(bytes),0) from files where session_id=$1) bytes`, [s])).rows[0]
+    : (await pool.query(
+      `select (select count(*) from sessions) sessions,
+              (select count(*) from files where kind='media') media,
+              (select coalesce(sum(record_count),0) from sessions) records,
+              (select coalesce(sum(bytes),0) from files) bytes`)).rows[0];
   res.json({
     activity: activity && { label: activity.data.label, engine: activity.data.engine, wall: Number(activity.wall) },
     location: loc && { lat: loc.data.lat, lon: loc.data.lon, acc: loc.data.acc, wall: Number(loc.wall) },
