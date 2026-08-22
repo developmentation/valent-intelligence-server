@@ -237,6 +237,7 @@
     <div>
       <h1 class="place" id="place">—</h1>
       <div class="coords" id="coords"></div>
+      <div class="coords" id="localtime" style="margin-top:3px;color:var(--dim)"></div>
     </div>
     <div class="facts" id="facts"></div>
     <div class="np fade-swap" id="np" style="display:none">
@@ -292,7 +293,7 @@ const TILES={ dark:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.pn
 // the skew-proof recency signal used for live/replay + "last signal", since the device clock can be wrong.
 let state={ sid:null, device:'', live:false, first:0, last:0, liveAt:0,
   items:[], curIdx:0, auto:true, track:[], unpinT:null, replayT:null, muted:true,
-  pinnedLoc:null, lastStatus:null };
+  pinnedLoc:null, lastStatus:null, tzOffsetMin:null };
 
 // ---------- map ----------
 function setTiles(theme){
@@ -513,6 +514,8 @@ function fillInfo(){
   add('Session', state.sid||'—');
   add('State', state.live?'Live':'Replay');
   add('Last signal', state.liveAt?fmtAgo(state.liveAt):'—');
+  add('Local time', fmtLocal(Date.now()));
+  add('UTC', new Date().toISOString().substr(11,5));
   if(s.battery&&s.battery.percent!=null) add('Battery', Math.round(s.battery.percent)+'%'+(s.battery.charging?' · charging':''));
   if(s.gnss) add('Satellites', `${s.gnss.used}/${s.gnss.inView} in view`);
   if(s.location&&s.location.acc!=null) add('GPS accuracy', `±${Math.round(s.location.acc)} m`);
@@ -586,6 +589,7 @@ async function enterSession(s,isLive){
   clearInterval(state.replayT);
   state.sid=s.id; state.device=s.device||''; state.first=Number(s.first_wall||0); state.last=Number(s.last_wall||0);
   state.liveAt=Date.parse(s.updated_at||'')||Date.now();
+  state.tzOffsetMin=(s.tz_offset_min!=null)?Number(s.tz_offset_min):null;   // subject-local time offset
   state.live=isLive; state.auto=true; state.mode=isLive?'live':'replay';
   $('#empty').classList.remove('show');
   $('#devname').textContent=state.device;
@@ -610,6 +614,7 @@ function refreshMode(){
   const stale=$('#stale'), gap=now-state.liveAt;
   if(live && gap>120000){ stale.className='stale show'; stale.textContent='⚠ no signal for '+fmtAgo(state.liveAt).replace(' ago',''); }
   else stale.className='stale';
+  updateClock();
   setPill();
   if(state.mode==='replay') startReplay(); else clearInterval(state.replayT);
 }
@@ -669,6 +674,10 @@ function fmtAgo(ms){ if(!ms) return '—'; const s=(Date.now()-ms)/1000;
   if(s<90) return Math.round(s)+'s ago'; if(s<5400) return Math.round(s/60)+'m ago';
   if(s<172800) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// Storage is UTC (all wall fields are epoch ms). The DISPLAY is the SUBJECT's local time: shift the
+// real UTC instant by the captured device offset and read it as UTC. Falls back to null (→ UTC shown).
+function fmtLocal(ms){ if(state.tzOffsetMin==null) return null; return new Date(ms + state.tzOffsetMin*60000).toISOString().substr(11,5); }
+function updateClock(){ const el=$('#localtime'); if(!el) return; const t=fmtLocal(Date.now()); el.textContent = t ? (t+' · local time') : ''; }
 let toastT; function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2600); }
 
 // controls
@@ -684,6 +693,7 @@ $('#btnAudio').onclick=()=>openPanel('audio');
 $('#pclose').onclick=()=>$('#panel').classList.remove('open');
 // keep "live" freshness label ticking
 setInterval(()=>{ if(state.sid) refreshMode(); },30000);
+setInterval(updateClock,10000);   // subject-local clock ticks independently of data refreshes
 
 // map controls: tap the mini map (or the expand icon) to go full-screen; close/theme in the corner.
 $('#mapwrap').addEventListener('click',()=>{ if(!mapExpanded) expandMap(); });

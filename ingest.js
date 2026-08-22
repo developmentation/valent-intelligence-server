@@ -226,7 +226,7 @@ async function insertRecords(slice) {
 
 const DEFAULT_DEVICE_NAME = 'Valent';
 async function upsertSessionFromManifest(sessionId, bytes) {
-  let device = null, firstWall = null, lastWall = null;
+  let device = null, firstWall = null, lastWall = null, tzOffsetMin = null;
   const text = bytes.toString('utf8');
   for (const line of text.split('\n')) {
     const s = line.trim();
@@ -236,9 +236,10 @@ async function upsertSessionFromManifest(sessionId, bytes) {
     // The session NAME comes only from an explicit field on the session_open record. It must NOT be
     // read from `o.model` — those are per-stream ML model ids (e.g. the motion HAR "tinyhar-wisdm-v1",
     // the audio "ced-small"), not a device name, and were leaking into the session title.
-    if (!device && o.t === 'session_open') {
+    if (o.t === 'session_open') {
       const dn = o.device || o.deviceName || o.name;
-      if (dn) device = String(dn);
+      if (dn && !device) device = String(dn);
+      if (typeof o.tzOffsetMin === 'number') tzOffsetMin = o.tzOffsetMin;   // subject-local time offset
     }
     const w = walOf(o) || (o.t === 'clock_anchor' ? o.wall : null);
     if (typeof w === 'number') {
@@ -248,14 +249,15 @@ async function upsertSessionFromManifest(sessionId, bytes) {
   }
   if (!device) device = DEFAULT_DEVICE_NAME;   // until the app sends a name; user-configurable later
   await pool.query(
-    `insert into sessions (id, device, first_wall, last_wall, updated_at)
-       values ($1,$2,$3,$4, now())
+    `insert into sessions (id, device, first_wall, last_wall, tz_offset_min, updated_at)
+       values ($1,$2,$3,$4,$5, now())
      on conflict (id) do update set
        device = coalesce(excluded.device, sessions.device),
        first_wall = least(coalesce(sessions.first_wall, excluded.first_wall), excluded.first_wall),
        last_wall = greatest(coalesce(sessions.last_wall, excluded.last_wall), excluded.last_wall),
+       tz_offset_min = coalesce(excluded.tz_offset_min, sessions.tz_offset_min),
        updated_at = now()`,
-    [sessionId, device, firstWall, lastWall],
+    [sessionId, device, firstWall, lastWall, tzOffsetMin],
   );
 }
 

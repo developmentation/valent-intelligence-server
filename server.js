@@ -102,7 +102,7 @@ app.post('/ingest/live', express.json({ limit: '512kb' }), (req, res) => {
 
 // ---- live lane: a just-captured photo (raw bytes), stored immediately + gallery-broadcast ----
 // Disk-backed today via the storage seam; swap to a presigned R2 PUT later without touching callers.
-app.post('/ingest/live/photo', express.raw({ type: () => true, limit: '32mb' }), async (req, res) => {
+app.post('/ingest/live/photo', express.raw({ type: () => true, limit: '64mb' }), async (req, res) => {
   if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
   const sid = String(req.header('x-session') || '');
   const fname = String(req.header('x-filename') || '').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -468,7 +468,7 @@ app.get('/api/stream', requireAdmin, (req, res) => {
 
 app.get('/api/sessions', requireAdmin, async (_req, res) => {
   const q = await pool.query(
-    `select id, device, first_wall, last_wall, bytes, file_count, record_count, updated_at
+    `select id, device, first_wall, last_wall, bytes, file_count, record_count, tz_offset_min, updated_at
      from sessions order by coalesce(last_wall, extract(epoch from updated_at)*1000) desc limit 200`);
   res.json(q.rows);
 });
