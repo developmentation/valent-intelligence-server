@@ -317,14 +317,20 @@ app.get('/admin/validate', async (req, res) => {
     }
     const misaligned = perStream.filter((a) => !a.aligned);
     const manifestAligned = manifestPresent && perStream.length > 0 && misaligned.length === 0;
+    // Completeness (the verdict driver) turns ONLY on MISSING chunks — data the manifest declared that
+    // the server does not hold. `extra` chunks (the server holding MORE than the manifest declared, e.g.
+    // a sparse stream's first chunk that the manifest recorded as empty) are never data loss, so they
+    // must not fail the verdict — they're still reported in `alignment` for transparency.
+    const missingData = perStream.some((a) => a.missing.length > 0);
+    const extraStreams = perStream.filter((a) => a.missing.length === 0 && (a.extra.length > 0 || a.trailingExtra.length > 0));
 
     const uploadOk = missingDisk.length === 0 && dbVsScan && manifestPresent;
     const captureClosed = closedDetected === true;
     const verdict = uploading ? 'UPLOADING'
       : !uploadOk ? 'INCOMPLETE'
-        : !manifestAligned ? 'MISALIGNED'
+        : missingData ? 'MISALIGNED'
           : captureClosed ? 'COMPLETE'
-            : 'UPLOADED_NOT_CLOSED';   // all files delivered + aligned, but capture had no clean close
+            : 'UPLOADED_NOT_CLOSED';   // all declared data delivered, but capture had no clean close
 
     res.json({
       uploading, lastBatchAt: bstat.mx,
@@ -345,14 +351,17 @@ app.get('/admin/validate', async (req, res) => {
       streams: streams.map((s) => ({ ...s, indexedRecords: indexed[s.stream] || 0 })),
       verdict,
       reasons: [
-        misaligned.length ? `${misaligned.length} stream(s) not aligned with the manifest` : null,
+        missingData ? `${perStream.filter((a) => a.missing.length).length} stream(s) missing chunks the manifest declared` : null,
         uploading ? 'still uploading' : null,
         missingDisk.length ? `${missingDisk.length} file(s) not on disk` : null,
         !manifestPresent ? 'manifest missing' : null,
         !dbVsScan ? `file_count mismatch (db ${session.file_count} vs scan ${files.length})` : null,
         (!uploading && uploadOk && !captureClosed) ? 'capture not cleanly closed (interrupted) — delivered data is intact' : null,
       ].filter(Boolean),
-      note: totalGaps ? `${totalGaps} tick(s) skipped by sparse/event-driven streams (expected, not missing data)` : undefined,
+      note: [
+        totalGaps ? `${totalGaps} tick(s) skipped by sparse/event-driven streams (expected, not missing data)` : null,
+        extraStreams.length ? `${extraStreams.length} stream(s) hold extra chunk(s) not declared in the manifest (benign — server has more than declared, e.g. a sparse stream's first chunk)` : null,
+      ].filter(Boolean).join(' · ') || undefined,
     });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
