@@ -550,7 +550,23 @@ app.get('/api/track', requireAdmin, async (req, res) => {
   };
   if (s) mergeLive(s); else for (const sid of liveTracks.keys()) mergeLive(sid);
   rows.sort((a, b) => (a.session_id < b.session_id ? -1 : a.session_id > b.session_id ? 1 : (Number(a.wall) || 0) - (Number(b.wall) || 0)));
-  res.json(rows);
+  // De-noise: drop GPS outlier spikes — a fix that jumps kilometres from the last kept point and back,
+  // implying an impossible speed. The phone's GeoTrack.clean already rejects these for its own map;
+  // the durable records keep them, so the server map drew straight spikes to bad fixes. Mirror the
+  // speed-cap here so the "de-noised" track actually matches the phone. 300 m/s (~1080 km/h) is above
+  // any real travel incl. flights, so anything faster is a glitch, not movement.
+  const SPEED_CAP = 300;
+  const havM = (a, b) => { const R = 6371000, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r, la = a.lat * r, lb = b.lat * r; const h = Math.sin(dLat / 2) ** 2 + Math.cos(la) * Math.cos(lb) * Math.sin(dLon / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
+  const kept = []; const lastBy = {};
+  for (const p of rows) {
+    const last = lastBy[p.session_id];
+    if (last) {
+      const dt = Math.abs((Number(p.wall) || 0) - (Number(last.wall) || 0)) / 1000;
+      if (dt > 0 && dt < 3600 && havM(last, p) / dt > SPEED_CAP) continue;   // implausible jump → outlier, drop
+    }
+    kept.push(p); lastBy[p.session_id] = p;
+  }
+  res.json(kept);
 });
 
 // Every stream captured (all sessions or one), for a comprehensive live view — not just the 4 the
