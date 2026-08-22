@@ -13,6 +13,7 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 | `db.js` | `pg` pool + `migrate()` — applies `migrations/*.sql` in order via a `schema_migrations` ledger. |
 | `migrations/` | Sequenced schema. Every change is a new numbered file (see `migrations/README.md`). |
 | `public/dashboard.html` | The viewer: live map, gallery + lightbox, streams panel, audio banner + scene strip, transcript, streaming player, SSE-driven. |
+| `public/live.html` | `/live` — a full-screen, always-fresh media player for the live session (fusion HUD, mini/fullscreen map, filmstrip). SSE-driven; auto-follows session→session. Same auth. |
 
 ## The two lanes (split by latency, not dataset)
 - **Bulk lane — `POST /ingest`** — the durable, complete, ordered record. `gzip(VBATCH1)` of many chunk
@@ -39,9 +40,10 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 | `GET /admin/stats` | Bearer | corpus totals, per-kind/stream, sessions, recent batches |
 | `GET /admin/validate?session=` | Bearer | per-session acceptance check vs the phone manifest (see DATA-INTEGRITY) |
 | `POST /admin/apk` · `DELETE /admin/apk/:name` | Bearer | publish / prune APK builds |
-| `GET /login` · `POST /login` · `POST /logout` | — | JWT cookie auth (15-min access + 14-day refresh, HttpOnly, sliding) |
+| `GET /login` · `POST /login` · `POST /logout` | — | JWT cookie auth (15-min access + 14-day refresh, HttpOnly, sliding). `?next=<same-origin path>` returns there after sign-in (safePath-guarded) — how `/live` round-trips through login. |
 | `GET /` | JWT | dashboard |
-| `GET /api/stream` | JWT | **SSE**: `ingest` / `live` / `photo` events |
+| `GET /live` | JWT | full-screen live media player (see LIVE-VIEW.md) |
+| `GET /api/stream` | JWT | **SSE**: `ingest` / `live` / `photo` / `error` events |
 | `GET /api/sessions` | JWT | session list (newest first) |
 | `GET /api/status?session=` | JWT | latest activity/location/wifi/satellites/scene/now-playing/speech + totals (session-scoped) |
 | `GET /api/track?session=&max=` | JWT | GPS track, LOD-decimated per session, with the live tail merged |
@@ -56,7 +58,11 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 | `GET /setup` | JWT | QR to provision the phone |
 
 ## Data model (Postgres)
-- `sessions` — id, device, first/last wall, bytes, file_count, record_count.
+- `sessions` — id, **device (the session's display NAME)**, first/last wall, bytes, file_count, record_count.
+  The name comes from the manifest `session_open.device` field (app: `CaptureConfig.captureName`, default
+  **"Valent"**, user-configurable later); the server defaults to "Valent" when absent. It is NEVER read
+  from a manifest `model` field — those are per-stream ML model ids (e.g. the motion HAR
+  `tinyhar-wisdm-v1`, audio `ced-small`) and leaked into titles before this rule.
 - `streams` — per session×stream catalog: kind, time span, file/record counts, bytes.
 - `files` — every stored file: session/stream/filename/path, **sha256 (unique → dedup)**, bytes, kind.
 - `records` — **selective** index (only dashboard-queryable streams: location, gnss, wifi,
@@ -77,8 +83,25 @@ batch) · `_derived/{session}/…` reserved for processing outputs. APKs at `APK
 
 ## Run / deploy
 - Local: set `DATABASE_URL`, `npm start` (runs `migrate()` on boot).
-- Render: push to `main`; deploy via the Render API (public repo doesn't auto-deploy). New migrations
-  apply automatically on boot.
+- Render: push to `main`, then trigger **one** deploy via the Render API. New migrations apply
+  automatically on boot. Service `srv-da4bukk9v7es73aug02g`; API key + DB id in `../render/render.md`.
+
+## Operational lessons (learned the hard way — keep these in mind)
+- **Auto-deploy is slow/unreliable for this repo.** Don't rely on push-triggered deploys; trigger one
+  explicitly (`POST /v1/services/<srv>/deploys`). But do NOT stack a manual deploy on top of one that
+  already fired — two deploys restart the single instance back-to-back and give ~30–60 s of **502s**
+  (a reload clears it). One deploy = one brief restart.
+- **The DB is only reachable from inside Render** (the env `DATABASE_URL` is the internal host; the
+  external host drops connections from here). So one-off **data fixes go in a migration**, not an ad-hoc
+  external `psql`/`pg` — it runs on boot with internal access and is tracked (e.g. `0004` relabeled
+  leaked session names to "Valent").
+- **This machine's curl needs `-k`** to reach `onrender.com` / `api.render.com` (local CA issue), and
+  `MSYS_NO_PATHCONV=1` in Git Bash for URLs with `/` query values — but UNSET it for `curl --data-binary
+  @<file>` or the file path won't resolve and you upload **0 bytes** (bit us on an APK publish).
+- **`/admin/validate` verdict turns on MISSING chunks only.** `extra` chunks (server holds more than
+  the manifest declared — e.g. a sparse stream's first chunk recorded empty) are benign and reported in
+  `alignment`/`note`, never a failure. A fully-uploaded session reads `COMPLETE`; an interrupted-but-
+  complete one reads `UPLOADED_NOT_CLOSED` (no clean close, all declared data present).
 
 ## Known single-instance constraints (by design, until scale needs it)
 SSE clients + the live-track tail are in-memory (per-process). Going multi-instance requires Redis
