@@ -121,10 +121,25 @@ app.get('/admin/validate', async (req, res) => {
        from batches where session_id=$1`, [sid])).rows[0];
     const uploading = Number(bstat.recent || 0) > 0;
 
-    const totalGaps = streams.reduce((a, s) => a + s.gapCount, 0);
     const dbVsScan = files.length === session.file_count;
-    const clean = totalGaps === 0 && missingDisk.length === 0 && manifestPresent && dbVsScan;
-    const verdict = uploading ? 'UPLOADING' : (clean ? 'COMPLETE' : 'INCOMPLETE');
+    // Chunk indices are a SESSION-WIDE tick (a chunk boundary every ~minute). Dense streams write at
+    // every tick; event-driven streams (speech, wifi, health, bluetooth…) only write when they have
+    // data, so a gap in their tick sequence is EXPECTED sparsity, not lost data. So gaps are
+    // informational, not a failure. Authoritative completeness = clean capture-close + every file on
+    // disk + counts agree + not mid-upload; ingest already sha-verified every member.
+    const globalTicks = streams.reduce((m, s) => Math.max(m, (s.maxIdx == null ? -1 : s.maxIdx) + 1), 0);
+    const sparseStreams = streams
+      .filter((s) => s.chunks > 0 && s.chunks < globalTicks)
+      .map((s) => ({ stream: s.stream, chunks: s.chunks, ofTicks: globalTicks, skipped: s.gapCount }));
+    const totalGaps = streams.reduce((a, s) => a + s.gapCount, 0);
+
+    const uploadOk = missingDisk.length === 0 && dbVsScan && manifestPresent;
+    const captureClosed = closedDetected === true;
+    const verdict = uploading ? 'UPLOADING'
+      : !uploadOk ? 'INCOMPLETE'
+        : captureClosed ? 'COMPLETE'
+          : 'UPLOADED_NOT_CLOSED';   // all files delivered, but the capture had no clean close (interrupted)
+
     res.json({
       uploading, lastBatchAt: bstat.mx,
       session: sid, device: session.device,
@@ -137,17 +152,19 @@ app.get('/admin/validate', async (req, res) => {
         filesScanned: files.length, dbFileCount: session.file_count, dbVsScanMatch: dbVsScan,
         bytes: Number(session.bytes), records: Number(session.record_count),
       },
-      upload: { filesOnDisk: onDisk, filesMissingOnDisk: missingDisk.length, missingSample: missingDisk.slice(0, 20), totalChunkGaps: totalGaps },
-      manifestPresent, closedDetected,
+      upload: { filesOnDisk: onDisk, filesMissingOnDisk: missingDisk.length, missingSample: missingDisk.slice(0, 20) },
+      capture: { closedDetected, globalTicks, sparseStreams },      // sparse = expected, informational
+      manifestPresent,
       streams: streams.map((s) => ({ ...s, indexedRecords: indexed[s.stream] || 0 })),
       verdict,
       reasons: [
-        uploading ? 'still uploading — gaps are transient until the push finishes' : null,
-        totalGaps ? `${totalGaps} missing chunk index(es)` : null,
+        uploading ? 'still uploading' : null,
         missingDisk.length ? `${missingDisk.length} file(s) not on disk` : null,
         !manifestPresent ? 'manifest missing' : null,
         !dbVsScan ? `file_count mismatch (db ${session.file_count} vs scan ${files.length})` : null,
+        (!uploading && uploadOk && !captureClosed) ? 'capture not cleanly closed (interrupted) — delivered data is intact' : null,
       ].filter(Boolean),
+      note: totalGaps ? `${totalGaps} tick(s) skipped by sparse/event-driven streams (expected, not missing data)` : undefined,
     });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
