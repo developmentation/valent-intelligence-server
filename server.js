@@ -7,6 +7,7 @@ const QRCode = require('qrcode');
 const { pool, init } = require('./db');
 const { handleIngest, MEDIA_ROOT } = require('./ingest');
 const storage = require('./storage');
+const geotrack = require('./geotrack');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -524,49 +525,52 @@ app.get('/api/track', requireAdmin, async (req, res) => {
   // vanishes and endpoints stay put). A single ordered scan; the map gets a smooth line without
   // shipping tens of thousands of points. (Persisted multi-tier rollups can replace this at huge scale.)
   const perSession = Math.min(6000, Math.max(300, parseInt(req.query.max, 10) || (s ? 4000 : 1200)));
+  const RAW_CAP = 20000;   // max RAW fixes per session to smooth (bounds CPU/memory per request)
+  // Fetch the RAW fixes (NOT SQL-decimated) — the Kalman/RTS smoother must see the full stream to
+  // reproduce the phone's clean line; we decimate the SMOOTHED output afterwards for LOD.
   const q = await pool.query(
     `with pts as (
        select session_id, wall,
-              (data->>'lat')::float8 lat, (data->>'lon')::float8 lon,
-              (data->>'acc')::float8 acc, (data->>'speed')::float8 speed, (data->>'suspect') suspect,
-              row_number() over (partition by session_id order by wall) rn,
-              count(*)     over (partition by session_id) cnt
+              (data->>'lat')::float8 lat, (data->>'lon')::float8 lon, (data->>'acc')::float8 acc,
+              row_number() over (partition by session_id order by wall) rn
        from records where ${where} and data ? 'lat'
      )
-     select session_id, wall, lat, lon, acc, speed, suspect from pts
-     where rn = 1 or rn = cnt or rn % greatest(1, (cnt / ${perSession})::int) = 0
-     order by session_id, wall`, args);
-  const rows = q.rows.filter(r => r.lat != null && r.lon != null);
-  // Merge the fresh in-memory live tail (≤~10s old) on top of the durable DB track, so the map head
-  // is current rather than a chunk behind. Only points newer than the session's last DB fix are added.
+     select session_id, wall, lat, lon, acc from pts where rn <= ${RAW_CAP} order by session_id, wall`, args);
+  const bySession = new Map();
+  for (const r of q.rows) {
+    if (r.lat == null || r.lon == null) continue;
+    if (!bySession.has(r.session_id)) bySession.set(r.session_id, []);
+    bySession.get(r.session_id).push({ lat: r.lat, lon: r.lon, wall: Number(r.wall) || 0, acc: r.acc != null ? Number(r.acc) : 20 });
+  }
+  // Merge the fresh in-memory live tail (≤~10s old) so the smoothed head is current, not a chunk behind.
   const mergeLive = (sid) => {
     const t = liveTracks.get(sid);
     if (!t || !t.pts.length) return;
-    let lastWall = 0;
-    for (const r of rows) if (r.session_id === sid) { const w = Number(r.wall) || 0; if (w > lastWall) lastWall = w; }
-    for (const p of t.pts) {
-      if ((p.wall || 0) > lastWall) rows.push({ session_id: sid, wall: p.wall, lat: p.lat, lon: p.lon, acc: p.acc, speed: p.speed, suspect: null, live: true });
-    }
+    if (!bySession.has(sid)) bySession.set(sid, []);
+    const arr = bySession.get(sid);
+    let lastWall = 0; for (const p of arr) if (p.wall > lastWall) lastWall = p.wall;
+    for (const p of t.pts) if ((p.wall || 0) > lastWall) arr.push({ lat: p.lat, lon: p.lon, wall: p.wall, acc: p.acc != null ? Number(p.acc) : 20 });
   };
   if (s) mergeLive(s); else for (const sid of liveTracks.keys()) mergeLive(sid);
-  rows.sort((a, b) => (a.session_id < b.session_id ? -1 : a.session_id > b.session_id ? 1 : (Number(a.wall) || 0) - (Number(b.wall) || 0)));
-  // De-noise: drop GPS outlier spikes — a fix that jumps kilometres from the last kept point and back,
-  // implying an impossible speed. The phone's GeoTrack.clean already rejects these for its own map;
-  // the durable records keep them, so the server map drew straight spikes to bad fixes. Mirror the
-  // speed-cap here so the "de-noised" track actually matches the phone. 300 m/s (~1080 km/h) is above
-  // any real travel incl. flights, so anything faster is a glitch, not movement.
-  const SPEED_CAP = 300;
-  const havM = (a, b) => { const R = 6371000, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r, la = a.lat * r, lb = b.lat * r; const h = Math.sin(dLat / 2) ** 2 + Math.cos(la) * Math.cos(lb) * Math.sin(dLon / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
-  const kept = []; const lastBy = {};
-  for (const p of rows) {
-    const last = lastBy[p.session_id];
-    if (last) {
-      const dt = Math.abs((Number(p.wall) || 0) - (Number(last.wall) || 0)) / 1000;
-      if (dt > 0 && dt < 3600 && havM(last, p) / dt > SPEED_CAP) continue;   // implausible jump → outlier, drop
+
+  // Run each session's fixes through the EXACT phone algorithm (geotrack.clean = Kalman + RTS + glitch
+  // gate), then LOD-decimate the SMOOTHED track (keep first + last so no journey vanishes).
+  const out = [];
+  for (const [sid, pts] of bySession) {
+    if (!pts.length) continue;
+    pts.sort((a, b) => a.wall - b.wall);
+    const fixes = pts.map((p) => ({ lat: p.lat, lon: p.lon, frac: p.wall / 1000, accuracy: p.acc }));
+    const cleaned = geotrack.clean(fixes, 1.0);
+    const step = Math.max(1, Math.ceil(cleaned.length / perSession));
+    for (let i = 0; i < cleaned.length; i++) {
+      if (i === 0 || i === cleaned.length - 1 || i % step === 0) {
+        const c = cleaned[i];
+        out.push({ session_id: sid, wall: Math.round(c.frac * 1000), lat: c.lat, lon: c.lon, speed: c.speedMps });
+      }
     }
-    kept.push(p); lastBy[p.session_id] = p;
   }
-  res.json(kept);
+  out.sort((a, b) => (a.session_id < b.session_id ? -1 : a.session_id > b.session_id ? 1 : a.wall - b.wall));
+  res.json(out);
 });
 
 // Every stream captured (all sessions or one), for a comprehensive live view — not just the 4 the
