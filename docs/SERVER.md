@@ -66,7 +66,8 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 - `streams` — per session×stream catalog: kind, time span, file/record counts, bytes.
 - `files` — every stored file: session/stream/filename/path, **sha256 (unique → dedup)**, bytes, kind.
 - `records` — **selective** index (only dashboard-queryable streams: location, gnss, wifi,
-  motion_activity, audio_scene, media, speech, + any GPS-bearing) as `jsonb` with `ern`/`wall`.
+  motion_activity, audio_scene, media, speech, **power**, + any GPS-bearing) as `jsonb` with `ern`/`wall`.
+  `power` feeds `/api/status.battery` (the `/live` battery pill); widen via `INDEX_STREAMS` env.
 - `batches` — one row per received bulk batch (sha256 unique).
 - `errors` — device-reported crashes/errors: level/kind/component/message/where/stack/fields, `wall_ms`,
   **fingerprint (unique → dedup)**. Fed by `/ingest/errors`, read by `/admin/errors`. See ERROR-CATCHER.md.

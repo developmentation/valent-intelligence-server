@@ -7,12 +7,22 @@ A single full-screen "media player" for whatever session is live — think socia
 - **Media stage** — newest photo/video, `object-fit: contain` over a blurred copy of itself (so any
   aspect fits), **cross-fading** between items (two stacked layers swapped by opacity). Videos autoplay
   muted (tap to unmute) and play inline.
-- **Fusion HUD** over the media — place name (reverse-geocoded via OSM Nominatim, coords fallback),
-  activity, satellites/wifi, rolling audio-scene chips, now-playing music.
+- **Fusion HUD** over the media (presence over instrumentation — kept deliberately sparse):
+  - place name (reverse-geocoded via OSM Nominatim, coords fallback);
+  - **activity + pace + heading** on one line — pace is DE-JITTERED (displacement over a ~50 s window /
+    elapsed, `computePace`), never a single noisy GPS fix;
+  - **journey so far** — distance (haversine over the track) + duration;
+  - **altitude** — only when notably off the ground (|alt| ≥ 80 m);
+  - rolling **audio-scene** chips; **now-playing** music.
+- **Battery** pill (top bar) — capture-device `%` + charging bolt, coloured by level, so a viewer knows
+  if the stream may die. From `/api/status.battery` (the `power` stream, now indexed).
+- **Staleness** — a live session quiet >2 min shows "no signal for Xm" (amber); >4 min → REPLAY.
+- **Details modal (ⓘ)** — satellites, Wi-Fi, GPS accuracy, altitude, battery, last-signal: the
+  diagnostics kept OFF the main HUD.
 - **Map** — mini card (Leaflet, Carto dark/light tiles); tap to go fullscreen (drag + scroll + pinch
   zoom, zoom buttons, close/theme controls). Theme remembered in `localStorage`.
 - **Filmstrip** — the whole gallery, selectable; auto-reverts to newest when fresh media arrives.
-- **Transcript / Audio** — stubbed toggles (a "soon" dot) for later.
+- **Transcript / Audio** — stubbed toggles (a "soon" dot) for later. (Hidden on phones to save the top row.)
 
 ## Data + freshness (all existing APIs)
 `/api/sessions` (newest = active), `/api/status`, `/api/gallery`, `/api/track`, `/api/scene`, media via
