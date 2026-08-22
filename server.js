@@ -755,13 +755,21 @@ app.get('/download/apk/:name', (req, res) => {
   res.download(p, name);
 });
 // I publish new builds here with the ingest token (kept off the public surface).
-app.post('/admin/apk', express.raw({ type: () => true, limit: '256mb' }), (req, res) => {
+app.post('/admin/apk', (req, res) => {
   const auth = req.header('authorization') || '';
   if (!INGEST_TOKEN || auth !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
   const name = (req.header('x-apk-name') || `valent-${Date.now()}.apk`).replace(/[^a-zA-Z0-9._-]/g, '_');
-  fs.writeFileSync(path.join(APK_DIR, name), req.body);
-  const pruned = pruneApks(3); // keep newest 3 (latest + two rollback points)
-  res.json({ ok: true, name, bytes: req.body.length, pruned });
+  // STREAM to disk — never buffer the ~120MB APK in memory (that 256mb express.raw buffer 500'd under
+  // load on the single instance). Constant memory; clean up a partial file on a dropped upload.
+  const dest = path.join(APK_DIR, name);
+  const ws = fs.createWriteStream(dest);
+  let bytes = 0, done = false;
+  const fail = (e) => { if (done) return; done = true; ws.destroy(); fs.unlink(dest, () => {}); res.status(500).json({ ok: false, error: String(e && e.message || e) }); };
+  req.on('data', (d) => { bytes += d.length; });
+  req.on('error', fail);
+  ws.on('error', fail);
+  ws.on('finish', () => { if (done) return; done = true; const pruned = pruneApks(3); res.json({ ok: true, name, bytes, pruned }); });
+  req.pipe(ws);
 });
 // Manual delete of a specific build (same admin token as publish).
 app.delete('/admin/apk/:name', (req, res) => {
