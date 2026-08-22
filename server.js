@@ -72,25 +72,28 @@ app.get('/admin/validate', async (req, res) => {
       'select stream, filename, path, bytes, kind from files where session_id=$1 order by stream, filename', [sid])).rows;
 
     // Per-stream chunk analysis + disk existence. Chunk index is the trailing _NNNNNN in the filename.
+    // A chunk can have >1 file (e.g. audio: a .aac + a .anchors sidecar share the same index), so gaps
+    // are computed over the SET of indices, and files vs chunks are reported separately.
     const idxRe = /_(\d+)\.[^.]+$/;
+    const extRe = /\.([^.]+)$/;
     const byStream = {};
     let onDisk = 0; const missingDisk = [];
     for (const f of files) {
-      const s = (byStream[f.stream] || (byStream[f.stream] = { count: 0, indices: [], bytes: 0, kind: f.kind }));
+      const s = (byStream[f.stream] || (byStream[f.stream] = { count: 0, indices: new Set(), bytes: 0, kind: f.kind, exts: {} }));
       s.count++; s.bytes += Number(f.bytes || 0);
-      const m = idxRe.exec(f.filename); if (m) s.indices.push(parseInt(m[1], 10));
+      const m = idxRe.exec(f.filename); if (m) s.indices.add(parseInt(m[1], 10));
+      const e = extRe.exec(f.filename); if (e) s.exts[e[1]] = (s.exts[e[1]] || 0) + 1;
       if (await storage.exists(f.path)) onDisk++; else missingDisk.push(f.path);
     }
     const streams = Object.entries(byStream).map(([stream, s]) => {
-      const idx = s.indices.slice().sort((a, b) => a - b);
+      const idx = [...s.indices].sort((a, b) => a - b);
       const min = idx.length ? idx[0] : null;
       const max = idx.length ? idx[idx.length - 1] : null;
-      const present = new Set(idx);
       const gaps = [];
-      if (min != null) for (let i = min; i <= max; i++) if (!present.has(i)) gaps.push(i);
+      if (min != null) for (let i = min; i <= max; i++) if (!s.indices.has(i)) gaps.push(i);
       return {
-        stream, kind: s.kind, files: s.count, bytes: s.bytes,
-        minIdx: min, maxIdx: max, expectedChunks: min != null ? max - min + 1 : s.count,
+        stream, kind: s.kind, files: s.count, chunks: s.indices.size, bytes: s.bytes, exts: s.exts,
+        minIdx: min, maxIdx: max, expectedChunks: min != null ? max - min + 1 : s.indices.size,
         gapCount: gaps.length, gapsSample: gaps.slice(0, 50), contiguous: gaps.length === 0,
       };
     }).sort((a, b) => b.bytes - a.bytes);
@@ -111,10 +114,19 @@ app.get('/admin/validate', async (req, res) => {
       } catch (_) { /* leave null */ }
     }
 
+    // In-flight detection: if batches for this session are still arriving, gaps are transient (the
+    // push is mid-stream), so we report UPLOADING rather than falsely failing it as INCOMPLETE.
+    const bstat = (await pool.query(
+      `select max(received_at) mx, count(*) filter (where received_at > now() - interval '3 minutes') recent
+       from batches where session_id=$1`, [sid])).rows[0];
+    const uploading = Number(bstat.recent || 0) > 0;
+
     const totalGaps = streams.reduce((a, s) => a + s.gapCount, 0);
     const dbVsScan = files.length === session.file_count;
-    const complete = totalGaps === 0 && missingDisk.length === 0 && manifestPresent && dbVsScan;
+    const clean = totalGaps === 0 && missingDisk.length === 0 && manifestPresent && dbVsScan;
+    const verdict = uploading ? 'UPLOADING' : (clean ? 'COMPLETE' : 'INCOMPLETE');
     res.json({
+      uploading, lastBatchAt: bstat.mx,
       session: sid, device: session.device,
       clock: {
         firstWall: Number(session.first_wall), lastWall: Number(session.last_wall),
@@ -128,9 +140,10 @@ app.get('/admin/validate', async (req, res) => {
       upload: { filesOnDisk: onDisk, filesMissingOnDisk: missingDisk.length, missingSample: missingDisk.slice(0, 20), totalChunkGaps: totalGaps },
       manifestPresent, closedDetected,
       streams: streams.map((s) => ({ ...s, indexedRecords: indexed[s.stream] || 0 })),
-      verdict: complete ? 'COMPLETE' : 'INCOMPLETE',
+      verdict,
       reasons: [
-        totalGaps ? `${totalGaps} missing chunk(s)` : null,
+        uploading ? 'still uploading — gaps are transient until the push finishes' : null,
+        totalGaps ? `${totalGaps} missing chunk index(es)` : null,
         missingDisk.length ? `${missingDisk.length} file(s) not on disk` : null,
         !manifestPresent ? 'manifest missing' : null,
         !dbVsScan ? `file_count mismatch (db ${session.file_count} vs scan ${files.length})` : null,
