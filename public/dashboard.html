@@ -185,12 +185,12 @@ async function loadTrack(){
   trackLayer.clearLayers();
   $('#mapmeta').textContent = pts.length ? pts.length.toLocaleString()+' pts' : '';
   if(!pts.length) return;
-  // Split into segments so we never connect two different journeys/locations with a straight line:
-  // a new segment starts on a session change OR a jump > 25 km (a teleport / flight gap).
+  // One continuous line PER session (like the phone) — bridge any time/coverage gaps with a straight
+  // segment rather than dropping the connection into disconnected dashes. Only a session change starts
+  // a new line, so "All sessions" still shows each journey separately without joining them.
   const segs=[]; let cur=[];
   for(const p of pts){
-    if(cur.length){ const prev=cur[cur.length-1];
-      if(p.session_id!==prev.session_id || kmBetween(prev,p)>25){ segs.push(cur); cur=[]; } }
+    if(cur.length && p.session_id!==cur[cur.length-1].session_id){ segs.push(cur); cur=[]; }
     cur.push(p);
   }
   if(cur.length) segs.push(cur);
