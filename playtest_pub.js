@@ -72,7 +72,8 @@ const SS = 'C:/Users/Syma/AppData/Local/Temp/claude/c--dev-valent-intelligence-c
   await q.click('.playbtn');
   await q.waitForSelector('#show.open', { timeout: 8000 }).catch(() => {});
   await q.waitForFunction(() => document.querySelectorAll('#swFilms .thumb').length > 0, { timeout: 8000 }).catch(() => {});
-  await q.waitForTimeout(2500);
+  await q.waitForFunction(() => document.querySelectorAll('#show .layer.on').length > 0, { timeout: 10000 }).catch(() => {});
+  await q.waitForTimeout(1200);
   const showOpen = await q.$eval('#show', e => e.classList.contains('open')).catch(() => false);
   const swPlace = await q.$eval('#swPlace', e => e.textContent).catch(() => '(none)');
   const swProg = await q.$eval('#swProg', e => e.textContent).catch(() => '(none)');
