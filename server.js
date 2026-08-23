@@ -516,6 +516,65 @@ app.get('/api/transcript', requireAdmin, async (req, res) => {
   res.json({ count: segs.length, text: segs.map((x) => x.text).join(' '), segments: segs.slice(-600) });
 });
 
+// ---- High-fidelity, word-timestamped transcripts (enrichment layer; see migrations/0007 + ../gpu-stt) ----
+// Ingest a full transcript produced offline (Parakeet). Body: { session_id, model, vad, segments:[
+//   { audio_start_s, audio_end_s, text, words:[{w,s,e}] } ] }. Offsets are AUDIO-RELATIVE seconds; we
+// anchor to absolute wall-clock here using session.first_wall (authoritative). Re-ingest replaces the
+// (session_id, model) transcript wholesale. Large bodies → generous json limit.
+app.post('/admin/transcripts', requireAdmin, express.json({ limit: '64mb' }), async (req, res) => {
+  const b = req.body || {};
+  const sid = String(b.session_id || '');
+  const model = String(b.model || 'parakeet-tdt-0.6b-v2').slice(0, 80);
+  const vad = !!b.vad;
+  const segs = Array.isArray(b.segments) ? b.segments : [];
+  if (!sid || !segs.length) return res.status(400).json({ error: 'session_id and non-empty segments required' });
+  const srow = (await pool.query('select first_wall from sessions where id=$1', [sid])).rows[0];
+  if (!srow || srow.first_wall == null) return res.status(404).json({ error: 'unknown session or no first_wall to anchor to' });
+  const base = Number(srow.first_wall);
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    await client.query('delete from transcripts where session_id=$1 and model=$2', [sid, model]);
+    let seq = 0, inserted = 0;
+    for (let i = 0; i < segs.length; i += 500) {
+      const vals = [], ph = [];
+      for (const s of segs.slice(i, i + 500)) {
+        const text = String(s.text || '').trim(); if (!text) continue;
+        const a = Number(s.audio_start_s) || 0, e = Number(s.audio_end_s);
+        const ae = Number.isFinite(e) ? e : a;
+        const words = Array.isArray(s.words) ? JSON.stringify(s.words) : null;
+        const row = [sid, seq++, Math.round(base + a * 1000), Math.round(base + ae * 1000), a, ae, text, words, model, vad];
+        ph.push('(' + row.map((_, k) => '$' + (vals.length + k + 1)).join(',') + ')');
+        vals.push(...row);
+      }
+      if (ph.length) {
+        await client.query(
+          `insert into transcripts (session_id,seq,start_ms,end_ms,audio_start_s,audio_end_s,text,words,model,vad)
+           values ${ph.join(',')}`, vals);
+        inserted += ph.length;
+      }
+    }
+    await client.query('commit');
+    res.json({ ok: true, session_id: sid, model, vad, inserted });
+  } catch (e) { await client.query('rollback'); res.status(500).json({ error: e.message }); }
+  finally { client.release(); }
+});
+// Read a hi-fi transcript. ?session= (req), ?model=, ?from=&to= (wall ms window), ?words=1 to include
+// word arrays, ?format=text for the joined narrative.
+app.get('/api/transcript/hifi', requireAdmin, async (req, res) => {
+  const sid = String(req.query.session || ''); if (!sid) return res.status(400).json({ error: 'session required' });
+  const args = [sid]; let where = 'session_id=$1';
+  if (req.query.model) { args.push(String(req.query.model)); where += ` and model=$${args.length}`; }
+  if (req.query.from) { args.push(Number(req.query.from) || 0); where += ` and end_ms>=$${args.length}`; }
+  if (req.query.to) { args.push(Number(req.query.to) || 0); where += ` and start_ms<=$${args.length}`; }
+  const withWords = req.query.words === '1';
+  const q = await pool.query(
+    `select seq, start_ms, end_ms, audio_start_s, audio_end_s, text${withWords ? ', words' : ''}, model, vad
+     from transcripts where ${where} order by start_ms asc limit 50000`, args);
+  if (String(req.query.format) === 'text') return res.type('text').send(q.rows.map((r) => r.text).join(' '));
+  res.json({ count: q.rows.length, segments: q.rows.map((r) => ({ ...r, start_ms: Number(r.start_ms), end_ms: Number(r.end_ms) })) });
+});
+
 // Shared de-noised track builder. Decimate across each session's FULL span (never truncate), then run
 // the EXACT phone algorithm (geotrack.clean = Kalman + RTS + glitch gate). Used by /api/track (admin,
 // live tail merged) and the public publication API (fixed session set, no live tail).
