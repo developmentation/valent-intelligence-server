@@ -194,7 +194,7 @@ async function loadGallery(){
     const d=document.createElement('div'); d.className='g'+(excluded.has(it.path)?' ex':''); d.dataset.path=it.path; d.title=it.filename;
     const dot=`<span class="lg" style="background:${colorFor(it.session_id)}"></span>`;
     if(it.type==='video') d.innerHTML=`<video src="${it.url}#t=0.1" muted preload="metadata"></video><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`;
-    else d.innerHTML=`<img src="${it.url}" loading="lazy" alt="">${dot}`;
+    else d.innerHTML=`<img src="${it.url}?w=400" loading="lazy" alt="">${dot}`;
     d.onclick=()=>{ if(excluded.has(it.path)) excluded.delete(it.path); else excluded.add(it.path); d.classList.toggle('ex'); $('#galCount').textContent=`(${galItems.length} items, ${excluded.size} excluded)`; };
     g.appendChild(d);
   });

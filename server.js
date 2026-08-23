@@ -8,6 +8,7 @@ const { pool, init } = require('./db');
 const { handleIngest, MEDIA_ROOT } = require('./ingest');
 const storage = require('./storage');
 const geotrack = require('./geotrack');
+const imagepipe = require('./imagepipe');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -727,7 +728,8 @@ app.get('/pub/:id/media/*', async (req, res) => {
   const ok = (await pool.query(
     `select 1 from files where kind='media' and session_id = any($1) and path=$2 limit 1`, [sids, rel])).rows[0];
   if (!ok) return res.status(404).end();
-  try { storage.serve(res, rel); } catch (_) { res.status(400).end(); }
+  // ?w=<allowed> → downscaled/recompressed JPEG (cached) for fast public galleries; else original bytes.
+  imagepipe.sendImage(req, res, storage, rel).catch(() => { try { storage.serve(res, rel); } catch (_) { res.status(400).end(); } });
 });
 app.get('/publish/:id', async (req, res) => {
   const pub = await loadPublished(req.params.id);
@@ -920,7 +922,31 @@ app.get('/api/manifest', requireAdmin, async (req, res) => {
 app.get('/media/*', requireAdmin, (req, res) => {
   const rel = decodeURIComponent(req.params[0] || '');
   if (rel.includes('..')) return res.status(400).end();
-  try { storage.serve(res, rel); } catch (_) { res.status(400).end(); }
+  // ?w=<allowed> → downscaled/recompressed JPEG (cached); otherwise original bytes.
+  imagepipe.sendImage(req, res, storage, rel).catch(() => { try { storage.serve(res, rel); } catch (_) { res.status(400).end(); } });
+});
+
+// ---- purge a session: delete its files (disk + derived thumbnails), records, and the session row.
+// Token-gated (not the login) and requires an explicit exact session id — never a wildcard. Used to
+// remove test/junk sessions and reclaim disk. Destructive and irreversible. ----
+app.post('/admin/purge-session', express.json({ limit: '16kb' }), async (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const sid = String((req.body && req.body.session) || '').trim();
+  if (!sid || sid === '*' || sid.includes('..') || sid.includes('/')) return res.status(400).json({ error: 'explicit session id required' });
+  try {
+    const files = (await pool.query('select path from files where session_id=$1', [sid])).rows;
+    let removed = 0;
+    for (const f of files) { if (await storage.del(f.path)) removed++; }
+    // derived thumbnails mirror the key under _derived/w<width>/<sid>/…
+    for (const w of imagepipe.WIDTHS) {
+      const dir = path.resolve(storage.root, '_derived', 'w' + w, sid);
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
+    const recs = (await pool.query('delete from records where session_id=$1', [sid])).rowCount;
+    const dbf = (await pool.query('delete from files where session_id=$1', [sid])).rowCount;
+    const sess = (await pool.query('delete from sessions where id=$1', [sid])).rowCount;
+    res.json({ ok: true, session: sid, filesOnDisk: removed, dbFiles: dbf, records: recs, sessionRow: sess });
+  } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
 });
 
 // ---- APK distribution (remote updates without a cable) ----

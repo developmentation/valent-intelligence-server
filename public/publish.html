@@ -284,7 +284,7 @@ function renderGrid(){
     const tm=`<div class="tm">${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))}</div>`;
     if(m.type==='video'){ d.innerHTML=`<video src="${m.url}#t=0.1" muted preload="metadata"></video><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}${tm}`;
       d.querySelector('video').addEventListener('loadeddata',()=>d.classList.remove('loading'),{once:true}); }
-    else { const im=new Image(); im.onload=()=>{d.classList.remove('loading');im.classList.add('rdy');}; im.src=m.url; d.appendChild(im); d.insertAdjacentHTML('beforeend',dot+tm); }
+    else { const im=new Image(); im.onload=()=>{d.classList.remove('loading');im.classList.add('rdy');}; im.src=m.url+'?w=500'; d.appendChild(im); d.insertAdjacentHTML('beforeend',dot+tm); }
     d.onclick=()=>openLb(i);
     g.appendChild(d);
   });
@@ -292,7 +292,7 @@ function renderGrid(){
 function openLb(i){ lbIdx=i; const m=shown[i]; if(!m) return;
   $('#lbBody').innerHTML = m.type==='video'
     ? `<video class="media" src="${m.url}" controls autoplay playsinline></video>`
-    : `<img class="media" src="${m.url}">`;
+    : `<img class="media" src="${m.url}?w=1600">`;
   $('#lbCap').textContent=`${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))} · ${i+1} / ${shown.length}`;
   $('#lb').classList.add('open');
 }
@@ -400,7 +400,7 @@ function swShow(idx,{fade=true}={}){
     const im=new Image(); im.className='fg'; im.decoding='async'; const bg=document.createElement('img'); bg.className='bg'; let tries=0;
     im.onload=done;
     im.onerror=()=>{ if(tries++<3){ setTimeout(()=>{ const u=it.url+(it.url.includes('?')?'&':'?')+'r='+tries+'_'+Date.now(); bg.src=u; im.src=u; },2500); } else done(); };
-    bg.src=it.url; im.src=it.url; sw.back.append(bg,im);
+    bg.src=it.url+'?w=900'; im.src=it.url+'?w=1600'; sw.back.append(bg,im);
     if(sw.playing){ clearTimeout(sw.timer); sw.timer=setTimeout(swNext,SW_DWELL); }
   }
 }
@@ -423,7 +423,7 @@ function swRenderStrip(){
     const d=document.createElement('div'); d.className='thumb'+(i===sw.idx?' cur':'');
     const dot=`<span class="lg" style="background:${legColor[it.session_id]||'#ff5a3c'}"></span>`;
     if(it.type==='video'){ d.classList.add('vid'); d.innerHTML=`<div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`; }
-    else { d.classList.add('loading'); const im=new Image(); im.onload=()=>{d.classList.remove('loading');im.classList.add('rdy');}; im.onerror=()=>d.classList.remove('loading'); im.src=it.url; d.appendChild(im); d.insertAdjacentHTML('beforeend',dot); }
+    else { d.classList.add('loading'); const im=new Image(); im.onload=()=>{d.classList.remove('loading');im.classList.add('rdy');}; im.onerror=()=>d.classList.remove('loading'); im.src=it.url+'?w=140'; d.appendChild(im); d.insertAdjacentHTML('beforeend',dot); }
     d.onclick=()=>{ swPause(); swShow(i); };
     f.appendChild(d);
   });
