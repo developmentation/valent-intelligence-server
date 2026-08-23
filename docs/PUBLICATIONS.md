@@ -56,6 +56,11 @@ Served by `publish.html`, which fetches `/api/pub/:id` and renders:
   clock where the person actually was, not UTC or the viewer's zone);
 - a gallery grid (leg-color dots, local timestamps, video badges) with a keyboard-navigable lightbox.
 
+The leg pills double as a **filter**: tap a leg to scope the gallery (and the map focus) to that session;
+an **All** pill clears it. The filter also scopes the slideshow — filter to a leg, then Play to replay just
+that leg. A **light/dark toggle** (top-right, and in the slideshow) themes the whole page and both maps
+(CARTO `light_all`/`dark_all` tiles); it defaults to dark and is remembered in `localStorage`.
+
 ### Slideshow (cinematic replay)
 
 The published page has a **Play slideshow** button that opens a full-screen cinematic player — the same
@@ -66,8 +71,10 @@ item drives a fusion HUD + map exactly as the live view does:
 - the **place name** (reverse-geocoded), coordinates, and **subject-local time** of that photo;
 - chips: which **leg** (colored, "leg 2/3"), the **speed** at that moment (from the de-noised track),
   and the **journey** total (distance · duration);
-- a mini map (tap to expand) showing the full colored per-leg track with a **head marker that moves** to
-  where each photo was taken (nearest de-noised fix by time);
+- a mini map (tap to expand) that is **dynamic to the image**: it zooms to the current photo's leg and
+  reframes as the leg changes, with a **head marker that moves** to where each photo was taken (nearest
+  de-noised fix by time); expanding the map shows the whole journey. Its tiles follow the light/dark theme,
+  though the cinematic chrome stays dark for legibility over photos.
 - a filmstrip; play/pause; ←/→ and space; Esc closes.
 
 It is driven entirely by the already-loaded `/api/pub` data — no extra endpoints, and (see below) **no
