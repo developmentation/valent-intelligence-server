@@ -53,13 +53,14 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 | `GET /api/audio?session=` | JWT | ordered `.aac` clips for the streaming player |
 | `GET /api/manifest?session=` | JWT | per-session streams manifest (visualizer entry point) |
 | `GET /api/gallery?session=` | JWT | media items with URLs |
-| `GET /media/*` | JWT | serve a stored file (via the storage seam) |
+| `GET /media/*` | JWT | serve a stored file; `?w=<allowed>` → cached downscaled JPEG (see MEDIA-PIPELINE.md) |
+| `POST /admin/purge-session` | INGEST_TOKEN | delete a session's files+derived+records+row (exact id; destructive) |
 | `GET /curate` | JWT | publication builder UI (see PUBLICATIONS.md) |
 | `GET · POST /admin/publications` | JWT | list / create publications |
 | `GET · PATCH · DELETE /admin/publications/:id` | JWT | read / edit (incl. publish/unpublish) / delete a publication |
 | `GET /publish/:id` | **none** | public journey viewer (only if published; else 404) |
 | `GET /api/pub/:id` | **none** | public publication JSON: legs + de-noised track + gallery, **exclusions removed** |
-| `GET /pub/:id/media/*` | **none** | public media — 404s unless published, a member session, AND not excluded |
+| `GET /pub/:id/media/*` | **none** | public media — 404s unless published, a member session, AND not excluded; `?w=<allowed>` → cached downscaled JPEG (see MEDIA-PIPELINE.md) |
 | `GET /download` · `/download/app.apk` · `/download/apk/:name` | — | APK install page + downloads |
 | `GET /setup` | JWT | QR to provision the phone |
 

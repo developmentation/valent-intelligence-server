@@ -55,6 +55,8 @@ Served by `publish.html`, which fetches `/api/pub/:id` and renders:
 - leg pills with **subject-local** times (each leg carries its `tz_offset_min`, so times read as the
   clock where the person actually was, not UTC or the viewer's zone);
 - a gallery grid (leg-color dots, local timestamps, video badges) with a keyboard-navigable lightbox.
+  Grid/lightbox/slideshow request **downscaled JPEG thumbnails** (`/pub/:id/media/*?w=…`, cached and
+  `immutable`) instead of the multi-MB originals, so the page loads fast — see `MEDIA-PIPELINE.md`.
 
 The leg pills double as a **filter**: tap a leg to scope the gallery (and the map focus) to that session;
 an **All** pill clears it. The filter also scopes the slideshow — filter to a leg, then Play to replay just
