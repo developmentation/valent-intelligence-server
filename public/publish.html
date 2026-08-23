@@ -9,10 +9,17 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root{--bg:#07090d;--panel:#11151c;--line:rgba(255,255,255,.09);--ink:#f4f7fa;--mut:rgba(244,247,250,.6);--dim:rgba(244,247,250,.38);--accent:#ff5a3c;
+  :root{--bg:#07090d;--panel:#11151c;--tile:#12161d;--line:rgba(255,255,255,.09);--ink:#f4f7fa;--mut:rgba(244,247,250,.6);--dim:rgba(244,247,250,.38);--accent:#ff5a3c;
     --glass:rgba(16,19,26,.55);--disp:"Space Grotesk",system-ui,sans-serif;--mono:"JetBrains Mono",ui-monospace,monospace;}
+  body.light{--bg:#eef1f5;--panel:#ffffff;--tile:#e3e7ed;--line:rgba(6,10,16,.12);--ink:#0d1015;--mut:rgba(13,16,21,.62);--dim:rgba(13,16,21,.42);
+    --glass:rgba(255,255,255,.72);}
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--disp);-webkit-font-smoothing:antialiased}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--disp);-webkit-font-smoothing:antialiased;transition:background .25s,color .25s}
+  /* theme toggle (top-right of the page) */
+  #themeBtn{position:fixed;top:14px;right:14px;z-index:60;width:40px;height:40px;border-radius:11px;border:1px solid var(--line);
+    background:var(--glass);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);display:grid;place-items:center}
+  #themeBtn svg{width:19px;height:19px;stroke:var(--ink);stroke-width:1.9;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .leg.on{border-color:var(--accent);color:var(--ink);background:rgba(255,90,60,.10)}
   button{font-family:inherit;color:inherit;cursor:pointer}
   .wrap{max-width:1000px;margin:0 auto;padding:0 16px 80px}
   .hero{padding:44px 4px 20px}
@@ -35,7 +42,7 @@
   .sec{margin-top:34px}
   .sec h2{font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);margin:0 0 12px;font-family:var(--mono)}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-  .cell{position:relative;aspect-ratio:1;border-radius:12px;overflow:hidden;background:#12161d;border:1px solid var(--line);cursor:pointer}
+  .cell{position:relative;aspect-ratio:1;border-radius:12px;overflow:hidden;background:var(--tile);border:1px solid var(--line);cursor:pointer}
   .cell img,.cell video{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .4s}
   .cell img.rdy{opacity:1}
   .cell.loading{background:linear-gradient(100deg,#12161d 30%,#1c2230 50%,#12161d 70%);background-size:220% 100%;animation:shim 1.4s linear infinite}
@@ -59,7 +66,10 @@
   @keyframes hp{0%{box-shadow:0 0 0 0 rgba(255,90,60,.5)}70%{box-shadow:0 0 0 13px rgba(255,90,60,0)}100%{box-shadow:0 0 0 0 rgba(255,90,60,0)}}
 
   /* ============ SLIDESHOW OVERLAY (cinematic, same visual language as /live) ============ */
-  #show{position:fixed;inset:0;z-index:2000;display:none;background:var(--bg);overflow:hidden}  /* above Leaflet panes/controls */
+  /* The slideshow is a cinematic player — always dark chrome for legibility over photos (its MAP tiles
+     still follow the page theme). Re-pin the dark palette so body.light doesn't lighten the stage/HUD. */
+  #show{--bg:#07090d;--panel:#11151c;--line:rgba(255,255,255,.09);--ink:#f4f7fa;--mut:rgba(244,247,250,.6);--dim:rgba(244,247,250,.38);--glass:rgba(16,19,26,.55);
+    position:fixed;inset:0;z-index:2000;display:none;background:#07090d;overflow:hidden}  /* above Leaflet panes/controls */
   #show.open{display:block}
   #show .stage{position:fixed;inset:0;z-index:0;background:var(--bg)}
   #show .layer{position:absolute;inset:0;opacity:0;transition:opacity .85s ease;will-change:opacity}
@@ -134,6 +144,7 @@
 </style>
 </head>
 <body>
+<button id="themeBtn" title="Light / dark" onclick="toggleTheme()"></button>
 <div class="wrap" id="app"><div id="empty">Loading…</div></div>
 
 <div id="lb"><button class="x" onclick="closeLb()">×</button><button class="nav" id="lbPrev" onclick="stepLb(-1)">‹</button><button class="nav" id="lbNext" onclick="stepLb(1)">›</button><div id="lbBody"></div><div class="cap" id="lbCap"></div></div>
@@ -149,6 +160,7 @@
         <div class="btitle" id="swTitle"></div><div class="bsub" id="swSub"></div></div>
     </div>
     <div class="tools">
+      <button class="tbtn" id="swTheme" title="Light / dark"></button>
       <button class="tbtn" id="swFull" title="Fullscreen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
       <button class="tbtn" id="swClose" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
@@ -174,6 +186,24 @@ const $=s=>document.querySelector(s);
 const LEG_COLORS=['#ff5a3c','#3ce38f','#5b9dff','#ffb454','#c07cff','#38e1c0','#ff7ab6','#9fd356'];
 const id=location.pathname.split('/').filter(Boolean).pop();
 let data=null, map, legColor={}, media=[], lbIdx=0;
+let filterSid=null, shown=[], mapTiles=null, allBounds=null;   // shown = the currently-visible (filtered) media
+
+// ---- theme (page + both maps); default dark, remembered ----
+const TILES={ dark:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+              light:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' };
+const SUN='<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const MOON='<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+let theme='dark'; try{ theme=localStorage.getItem('pubTheme')||'dark'; }catch(e){}
+function tileOpts(){ return {maxZoom:19,subdomains:'abcd',attribution:'© OpenStreetMap © CARTO'}; }
+function applyTheme(t){
+  theme=t; try{ localStorage.setItem('pubTheme',t); }catch(e){}
+  document.body.classList.toggle('light', t==='light');
+  const ico = t==='dark' ? SUN : MOON;   // show the action (dark → offer sun/light)
+  const tb=$('#themeBtn'); if(tb) tb.innerHTML=ico; const st=$('#swTheme'); if(st) st.innerHTML=ico;
+  if(map && mapTiles){ map.removeLayer(mapTiles); mapTiles=L.tileLayer(TILES[t],tileOpts()).addTo(map); }
+  if(sw.map && sw.tiles){ sw.map.removeLayer(sw.tiles); sw.tiles=L.tileLayer(TILES[t],tileOpts()).addTo(sw.map); }
+}
+function toggleTheme(){ applyTheme(theme==='dark'?'light':'dark'); }
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function havM(a,b){const R=6371000,r=Math.PI/180,dLat=(b[0]-a[0])*r,dLon=(b[1]-a[1])*r,la=a[0]*r,lb=b[0]*r;const h=Math.sin(dLat/2)**2+Math.cos(la)*Math.cos(lb)*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(h));}
@@ -215,14 +245,25 @@ function render(){
     <div class="sec"><h2>Gallery</h2><div class="grid" id="grid"></div></div>
     <footer>Shared from Valent · sensor-fusion journey</footer>`;
   drawMap();
-  $('#legsRow').innerHTML=legs.map(l=>`<span class="leg" onclick="focusLeg('${l.session_id}')"><span class="dot" style="background:${legColor[l.session_id]}"></span>${localTime(l.first_wall,l.tz_offset_min)}–${localTime(l.last_wall,l.tz_offset_min)} · ${fmtDur(((l.last_wall||0)-(l.first_wall||0))/1000)}</span>`).join('');
+  renderLegs();
   renderGrid();
 }
+// The leg pills double as a FILTER: tap a leg to show only its media (and focus the map on it); "All"
+// clears the filter. The active pill is highlighted. The filter also scopes the slideshow.
+function renderLegs(){
+  const legs=data.legs||[];
+  let html=`<span class="leg${filterSid?'':' on'}" onclick="setFilter(null)">All</span>`;
+  html+=legs.map(l=>`<span class="leg${filterSid===l.session_id?' on':''}" onclick="setFilter('${l.session_id}')"><span class="dot" style="background:${legColor[l.session_id]}"></span>${localTime(l.first_wall,l.tz_offset_min)}–${localTime(l.last_wall,l.tz_offset_min)} · ${fmtDur(((l.last_wall||0)-(l.first_wall||0))/1000)}</span>`).join('');
+  $('#legsRow').innerHTML=html;
+}
+function setFilter(sid){ filterSid=sid; renderLegs(); renderGrid(); if(sid) focusLeg(sid); else fitAllMap(); }
+function viewMedia(){ return filterSid ? media.filter(m=>m.session_id===filterSid) : media; }
+function fitAllMap(){ if(map && allBounds){ try{ map.fitBounds(allBounds.pad(.15)); }catch(e){} } }
 function drawMap(){
   if(typeof L==='undefined'){ return void setTimeout(drawMap,80); } // Leaflet is deferred; wait for it
   if(map) return;
   map=L.map('map',{zoomControl:true,attributionControl:true,scrollWheelZoom:false}).setView([20,0],2);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,subdomains:'abcd',attribution:'© OpenStreetMap © CARTO'}).addTo(map);
+  mapTiles=L.tileLayer(TILES[theme],tileOpts()).addTo(map);
   const all=[]; const bySess={};
   (data.track||[]).forEach(p=>{ (bySess[p.session_id]=bySess[p.session_id]||[]).push(p); });
   Object.entries(bySess).forEach(([sid,pts])=>{
@@ -230,13 +271,14 @@ function drawMap(){
     for(const p of pts){ if(seg.length){ const a=seg[seg.length-1]; if(Math.abs((p.wall||0)-(a.wall||0))>180000||havM([a.lat,a.lon],[p.lat,p.lon])>3000) flush(); } seg.push(p); all.push([p.lat,p.lon]); }
     flush();
   });
-  if(all.length){ try{ map.fitBounds(L.latLngBounds(all).pad(.15)); }catch(e){} }
+  if(all.length){ allBounds=L.latLngBounds(all); try{ map.fitBounds(allBounds.pad(.15)); }catch(e){} }
 }
 function focusLeg(sid){ const pts=(data.track||[]).filter(p=>p.session_id===sid).map(p=>[p.lat,p.lon]); if(pts.length){ try{ map.fitBounds(L.latLngBounds(pts).pad(.2)); }catch(e){} } }
 function tzOf(sid){ const l=(data.legs||[]).find(x=>x.session_id===sid); return l?l.tz_offset_min:0; }
 function renderGrid(){
+  shown=viewMedia();
   const g=$('#grid'); g.innerHTML='';
-  media.forEach((m,i)=>{
+  shown.forEach((m,i)=>{
     const d=document.createElement('div'); d.className='cell loading';
     const dot=`<span class="lg" style="background:${legColor[m.session_id]||'#ff5a3c'}"></span>`;
     const tm=`<div class="tm">${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))}</div>`;
@@ -247,14 +289,14 @@ function renderGrid(){
     g.appendChild(d);
   });
 }
-function openLb(i){ lbIdx=i; const m=media[i]; if(!m) return;
+function openLb(i){ lbIdx=i; const m=shown[i]; if(!m) return;
   $('#lbBody').innerHTML = m.type==='video'
     ? `<video class="media" src="${m.url}" controls autoplay playsinline></video>`
     : `<img class="media" src="${m.url}">`;
-  $('#lbCap').textContent=`${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))} · ${i+1} / ${media.length}`;
+  $('#lbCap').textContent=`${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))} · ${i+1} / ${shown.length}`;
   $('#lb').classList.add('open');
 }
-function stepLb(d){ openLb((lbIdx+d+media.length)%media.length); }
+function stepLb(d){ if(shown.length) openLb((lbIdx+d+shown.length)%shown.length); }
 function closeLb(){ $('#lb').classList.remove('open'); $('#lbBody').innerHTML=''; }
 document.addEventListener('keydown',e=>{ if(!$('#lb').classList.contains('open'))return; if(e.key==='Escape')closeLb(); if(e.key==='ArrowRight')stepLb(1); if(e.key==='ArrowLeft')stepLb(-1); });
 $('#lb').addEventListener('click',e=>{ if(e.target.id==='lb') closeLb(); });
@@ -266,14 +308,20 @@ $('#lb').addEventListener('click',e=>{ if(e.target.id==='lb') closeLb(); });
    No audio: the public API neither serves nor references audio (a future feature). */
 const SW_DWELL=6000;   // per-image dwell in the carousel
 const sw={ map:null, tiles:null, track:null, head:null, expanded:false, idx:0, playing:false, timer:null,
-  front:null, back:null, gen:0, curVideo:null, locs:[], geoCache:new Map(), lastGeoKey:'' };
+  front:null, back:null, gen:0, curVideo:null, framedSid:null, geoCache:new Map(), lastGeoKey:'' };
 
 function swInitMap(){
   if(sw.map) return;
   sw.map=L.map('swmap',{zoomControl:false,attributionControl:false,dragging:false,scrollWheelZoom:false,
     doubleClickZoom:false,touchZoom:false,boxZoom:false,keyboard:false,tap:false}).setView([20,0],2);
-  sw.tiles=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,subdomains:'abcd'}).addTo(sw.map);
+  sw.tiles=L.tileLayer(TILES[theme],tileOpts()).addTo(sw.map);
   sw.track=L.layerGroup().addTo(sw.map);
+}
+// Frame the mini map on ONE session's track — the map is dynamic to the current image's leg.
+function swFitSession(sid){
+  const pts=(data.track||[]).filter(p=>p.session_id===sid).map(p=>[p.lat,p.lon]);
+  if(pts.length){ try{ sw.map.fitBounds(L.latLngBounds(pts).pad(sw.expanded?.12:.25)); }catch(e){} }
+  else swFitAll();
 }
 function swDrawTrack(highlightSid){
   sw.track.clearLayers();
@@ -310,7 +358,7 @@ async function swPlaceName(lat,lon){
 
 function swStageLoading(on){ $('#swLoad').classList.toggle('show',!!on); }
 function swShow(idx,{fade=true}={}){
-  const it=media[idx]; if(!it) return;
+  const it=shown[idx]; if(!it) return;
   const gen=++sw.gen; sw.idx=idx; swMarkStrip();
   const t=it.received_at?Date.parse(it.received_at):null;
   const loc=t!=null?swLocForTime(t):null;
@@ -323,13 +371,15 @@ function swShow(idx,{fade=true}={}){
     swPlaceName(loc.lat,loc.lon); swMoveHead(loc.lat,loc.lon); }
   $('#swLtime').textContent = t!=null ? (localTime(t,tzOf(sid))+' · local time') : '';
   swDrawTrack(sid);
+  // the map is dynamic to the image: zoom to this image's session (leg) when it changes
+  if(!sw.expanded && sid!==sw.framedSid){ sw.framedSid=sid; swFitSession(sid); }
   // facts: leg chip, speed (from de-noised track), journey totals
   const facts=[];
   if(leg){ facts.push(`<span class="chip"><span class="cdot" style="background:${legColor[sid]}"></span>${esc(leg.title||('Leg '+(legIdx+1)))} · leg ${legIdx+1}/${(data.legs||[]).length}</span>`); }
   if(loc && loc.speed!=null && loc.speed>0.6){ const kmh=loc.speed*3.6; facts.push(`<span class="chip"><svg viewBox="0 0 24 24"><path d="M13 4v6l4 2M6 20l3-6"/><circle cx="12" cy="12" r="9"/></svg>${kmh<10?kmh.toFixed(1):Math.round(kmh)} km/h</span>`); }
   facts.push(`<span class="chip"><svg viewBox="0 0 24 24"><path d="M4 20l6-15 3 9 3-5 4 11z"/></svg><span class="k">journey</span> ${swTotals().dist} · ${swTotals().dur}</span>`);
   $('#swFacts').innerHTML=facts.join('');
-  $('#swProg').textContent=`${idx+1} / ${media.length}`;
+  $('#swProg').textContent=`${idx+1} / ${shown.length}`;
   // cross-fade the media
   sw.back.innerHTML=''; sw.curVideo=null; let swapped=false;
   const done=()=>{ if(swapped||gen!==sw.gen) return; swapped=true; swStageLoading(false);
@@ -359,17 +409,17 @@ function swTotals(){
   const dur=(data.legs||[]).reduce((a,l)=>a+((l.last_wall&&l.first_wall)?(l.last_wall-l.first_wall):0),0)/1000;
   return { dist:(m>=1000?(m/1000).toFixed(1)+' km':Math.round(m)+' m'), dur:fmtDur(dur) };
 }
-function swNext(){ swShow((sw.idx+1)%media.length); }
-function swPrev(){ swShow((sw.idx-1+media.length)%media.length); }
+function swNext(){ if(shown.length) swShow((sw.idx+1)%shown.length); }
+function swPrev(){ if(shown.length) swShow((sw.idx-1+shown.length)%shown.length); }
 function swPlay(){ sw.playing=true; $('#swPPico').innerHTML='<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
-  const it=media[sw.idx]; if(it && it.type!=='video'){ clearTimeout(sw.timer); sw.timer=setTimeout(swNext,SW_DWELL); }
+  const it=shown[sw.idx]; if(it && it.type!=='video'){ clearTimeout(sw.timer); sw.timer=setTimeout(swNext,SW_DWELL); }
   if(sw.curVideo) sw.curVideo.play().catch(()=>{}); }
 function swPause(){ sw.playing=false; $('#swPPico').innerHTML='<path d="M8 5v14l11-7z"/>'; clearTimeout(sw.timer); sw.timer=null; if(sw.curVideo) sw.curVideo.pause(); }
 function swTogglePlay(){ sw.playing?swPause():swPlay(); }
 
 function swRenderStrip(){
   const f=$('#swFilms'); f.innerHTML='';
-  media.forEach((it,i)=>{
+  shown.forEach((it,i)=>{
     const d=document.createElement('div'); d.className='thumb'+(i===sw.idx?' cur':'');
     const dot=`<span class="lg" style="background:${legColor[it.session_id]||'#ff5a3c'}"></span>`;
     if(it.type==='video'){ d.classList.add('vid'); d.innerHTML=`<div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`; }
@@ -388,11 +438,14 @@ function swStart(startIdx){
   $('#swTitle').textContent=data.title||'Journey';
   const legs=data.legs||[]; const tz=legs[0]&&legs[0].tz_offset_min||0;
   const first=Math.min(...legs.map(l=>l.first_wall).filter(x=>x));
-  $('#swSub').textContent=(isFinite(first)?localDay(first,tz)+' · ':'')+media.length+' photos & clips';
+  shown=viewMedia();
+  $('#swSub').textContent=(isFinite(first)?localDay(first,tz)+' · ':'')+shown.length+(filterSid?' in this leg':' photos & clips');
   sw.front=$('#swA'); sw.back=$('#swB');
-  swInitMap(); swDrawTrack(null); setTimeout(()=>{ sw.map.invalidateSize(); swFitAll(); },60);
+  swInitMap(); sw.framedSid=null; swDrawTrack(null);
   swRenderStrip();
   swShow(startIdx||0,{fade:false}); swPlay();
+  // once the container has real size, frame the current image's session properly
+  setTimeout(()=>{ sw.map.invalidateSize(); const s=shown[sw.idx]; swFitSession(s?s.session_id:null); },90);
 }
 // exposed to the hero button
 function showStart(i){ swStart(i); }
@@ -407,9 +460,12 @@ function swExpandMap(){ if(sw.expanded) return; sw.expanded=true; $('#swMapwrap'
 function swCollapseMap(){ if(!sw.expanded) return; sw.expanded=false; $('#swMapwrap').classList.remove('expanded');
   ['dragging','scrollWheelZoom','doubleClickZoom','touchZoom','boxZoom','keyboard'].forEach(k=>sw.map[k]&&sw.map[k].disable());
   if(sw.map._zc){ sw.map.removeControl(sw.map._zc); sw.map._zc=null; }
-  setTimeout(()=>{ sw.map.invalidateSize(); swFitAll(); },70); }
+  // back to the mini view: reframe on the current image's session
+  const s=shown[sw.idx]; sw.framedSid=s?s.session_id:null;
+  setTimeout(()=>{ sw.map.invalidateSize(); swFitSession(s?s.session_id:null); },70); }
 
 $('#swPP').onclick=swTogglePlay;
+$('#swTheme').onclick=toggleTheme;
 $('#swClose').onclick=swCloseShow;
 $('#swFull').onclick=()=>{ if(!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); };
 $('#swMapwrap').addEventListener('click',()=>{ if(!sw.expanded) swExpandMap(); });
@@ -420,6 +476,7 @@ document.addEventListener('keydown',e=>{ if(!$('#show').classList.contains('open
   if(e.key==='ArrowRight'){ swPause(); swNext(); } if(e.key==='ArrowLeft'){ swPause(); swPrev(); }
   if(e.key===' '){ e.preventDefault(); swTogglePlay(); } });
 
+applyTheme(theme);   // set page palette + button icons on boot (maps pick up TILES[theme] as they build)
 load();
 </script>
 </body>

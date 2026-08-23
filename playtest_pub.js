@@ -54,6 +54,25 @@ const SS = 'C:/Users/Syma/AppData/Local/Temp/claude/c--dev-valent-intelligence-c
   await q.waitForTimeout(1500); // let map tiles + thumbs settle for the screenshot
   await q.screenshot({ path: SS + 'pub_public.png', fullPage: true });
 
+  // LEG FILTER: clicking a leg pill scopes the gallery; "All" restores it.
+  const fullN = await q.$$eval('#grid .cell', e => e.length);
+  const pills = await q.$$('#legsRow .leg');           // [0]=All, [1..]=legs
+  if (pills[1]) { await pills[1].click(); await q.waitForTimeout(500); }
+  const legN = await q.$$eval('#grid .cell', e => e.length);
+  await q.$eval('#legsRow .leg', el => el.click());    // click "All"
+  await q.waitForTimeout(400);
+  const backN = await q.$$eval('#grid .cell', e => e.length);
+  log('LEG FILTER: all', fullN, '-> one leg', legN, '-> all', backN, (legN < fullN && backN === fullN) ? 'OK' : 'FAIL');
+
+  // THEME: default dark; toggle to light and back (page class + persisted).
+  const isLight0 = await q.$eval('body', b => b.classList.contains('light'));
+  await q.click('#themeBtn'); await q.waitForTimeout(400);
+  const isLight1 = await q.$eval('body', b => b.classList.contains('light'));
+  await q.screenshot({ path: SS + 'pub_light.png', fullPage: true });
+  await q.click('#themeBtn'); await q.waitForTimeout(300);
+  const isLight2 = await q.$eval('body', b => b.classList.contains('light'));
+  log('THEME: dark-default', !isLight0, '| ->light', isLight1, '| ->dark', !isLight2, (!isLight0 && isLight1 && !isLight2) ? 'OK' : 'FAIL');
+
   // exclusion enforcement: excluded media must 404, a kept one must 200 — from the NO-AUTH context
   const chk = async (rel) => { const r = await pub.request.get(base + '/pub/' + uuid + '/media/' + rel); return r.status(); };
   const exStatus = await chk(excludedPath);
