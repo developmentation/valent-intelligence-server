@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valent — Curate</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{--bg:#0a0d12;--panel:#12161d;--line:rgba(255,255,255,.09);--ink:#eef1f5;--mut:#8a93a0;--dim:#5b6472;--accent:#ff5a3c;--live:#3ce38f;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.5}
+  a{color:var(--accent)}
+  .wrap{max-width:1100px;margin:0 auto;padding:20px 16px 80px}
+  header{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:6px}
+  h1{font-size:22px;margin:0;letter-spacing:-.01em}
+  .tabs{display:flex;gap:8px;margin:14px 0}
+  .tab{padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--mut);cursor:pointer;font-size:13px}
+  .tab.on{color:var(--ink);border-color:rgba(255,90,60,.5)}
+  .sub{color:var(--mut);font-size:13px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0}
+  .row{display:flex;gap:12px;align-items:center}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin:0 0 10px}
+  /* session list */
+  .sess{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);margin:6px 0;cursor:pointer;transition:.15s}
+  .sess:hover{border-color:rgba(255,255,255,.2)}
+  .sess.sel{border-color:var(--accent);background:rgba(255,90,60,.06)}
+  .sess input{width:18px;height:18px;accent-color:var(--accent)}
+  .sess .meta{flex:1;min-width:0}
+  .sess .t{font-weight:600;font-size:14px}
+  .sess .d{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut)}
+  .sess .b{font-family:ui-monospace,monospace;font-size:11px;color:var(--dim);white-space:nowrap}
+  /* editor */
+  #map{height:340px;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#0a0d12}
+  .leaflet-container{background:#0a0d12}
+  input[type=text],textarea{width:100%;background:#0b0e14;border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:10px;font-family:inherit;font-size:14px}
+  textarea{min-height:56px;resize:vertical}
+  label.fld{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:10px 0 4px}
+  .legs{display:flex;flex-wrap:wrap;gap:8px}
+  .leg{display:inline-flex;align-items:center;gap:8px;padding:6px 11px;border-radius:999px;border:1px solid var(--line);font-family:ui-monospace,monospace;font-size:11.5px}
+  .leg .dot{width:9px;height:9px;border-radius:50%}
+  /* gallery */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
+  .g{position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;border:2px solid transparent;cursor:pointer;background:#161b22}
+  .g img,.g video{width:100%;height:100%;object-fit:cover;display:block}
+  .g .pv{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.3);pointer-events:none}
+  .g .pv svg{width:22px;height:22px;fill:#fff}
+  .g.ex{border-color:var(--accent);opacity:.5}
+  .g.ex::after{content:"excluded";position:absolute;left:0;right:0;bottom:0;background:var(--accent);color:#fff;font-size:9px;text-align:center;padding:2px;font-family:ui-monospace,monospace}
+  .g .lg{position:absolute;top:4px;left:4px;width:8px;height:8px;border-radius:50%;box-shadow:0 0 0 1px rgba(0,0,0,.4)}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:10px;border:1px solid var(--line);background:#1a2029;color:var(--ink);cursor:pointer;font-size:14px;font-weight:600}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.ghost{background:transparent}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+  .hint{color:var(--dim);font-size:12px}
+  .pill{font-family:ui-monospace,monospace;font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--line);color:var(--mut)}
+  .pill.pub{color:var(--live);border-color:rgba(60,227,143,.4)}
+  .pill.draft{color:var(--mut)}
+  .publink{font-family:ui-monospace,monospace;font-size:12px;color:var(--accent);word-break:break-all}
+  #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);background:#1a2029;border:1px solid var(--line);border-radius:999px;padding:8px 16px;font-size:13px;opacity:0;transition:.25s;z-index:9;pointer-events:none}
+  #toast.show{opacity:1}
+  .puprow{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--line);border-radius:10px;margin:8px 0;flex-wrap:wrap}
+  .puprow .g1{flex:1;min-width:200px}
+  .muted{color:var(--mut)} .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Curate</h1>
+    <span class="sub">build a shareable publication from your sessions · <a href="/">dashboard</a></span>
+  </header>
+  <div class="tabs">
+    <div class="tab on" id="tabNew" onclick="showTab('new')">Build</div>
+    <div class="tab" id="tabManage" onclick="showTab('manage');loadPubs()">My publications</div>
+  </div>
+
+  <!-- BUILD -->
+  <div id="viewNew">
+    <div class="card">
+      <h2>1 · Pick sessions <span class="muted" id="selCount"></span></h2>
+      <div class="hint" id="sessHint">Select the legs of the journey. Order is by time.</div>
+      <div id="sessions"></div>
+    </div>
+
+    <div id="editor" class="hidden">
+      <div class="card">
+        <h2>2 · Details</h2>
+        <label class="fld">Title</label>
+        <input type="text" id="title" placeholder="e.g. Snæfellsnes day trip">
+        <label class="fld">Description</label>
+        <textarea id="desc" placeholder="A short blurb shown at the top of the published page (optional)."></textarea>
+        <label class="fld">Legs</label>
+        <div class="legs" id="legs"></div>
+      </div>
+      <div class="card">
+        <h2>3 · Route</h2>
+        <div id="map"></div>
+      </div>
+      <div class="card">
+        <h2>4 · Choose what to show <span class="muted" id="galCount"></span></h2>
+        <div class="hint">Tap a photo/video to EXCLUDE it from the publication. Excluded items are hidden from the public page (and blocked at the API).</div>
+        <div class="grid" id="gallery" style="margin-top:10px"></div>
+      </div>
+      <div class="bar">
+        <button class="btn primary" id="btnPublish" onclick="save(true)">Publish</button>
+        <button class="btn ghost" id="btnDraft" onclick="save(false)">Save draft</button>
+        <span class="hint" id="editing"></span>
+        <div id="result" class="hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MANAGE -->
+  <div id="viewManage" class="hidden">
+    <div class="card">
+      <h2>My publications</h2>
+      <div id="pubs"><div class="muted">Loading…</div></div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const LEG_COLORS=['#ff5a3c','#3ce38f','#5b9dff','#ffb454','#c07cff','#38e1c0','#ff7ab6','#9fd356'];
+let sessions=[], selected=[], excluded=new Set(), editingId=null, map, trackLayer, galItems=[];
+
+async function jget(u){ const r=await fetch(u,{credentials:'same-origin'}); if(r.status===401){location.href='/login?next=/curate';throw 0;} return r.json(); }
+async function jsend(method,u,body){ const r=await fetch(u,{method,credentials:'same-origin',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); if(r.status===401){location.href='/login?next=/curate';throw 0;} return r.json(); }
+let toastT; function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2600); }
+function fmtDur(s){ s=Math.max(0,Math.round(s)); const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return h>0?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`; }
+function fmtRange(a,b){ const f=t=>new Date(Number(t)).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); return a?`${f(a)} → ${b?new Date(Number(b)).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'…'}`:'—'; }
+
+function showTab(t){ $('#tabNew').classList.toggle('on',t==='new'); $('#tabManage').classList.toggle('on',t==='manage');
+  $('#viewNew').classList.toggle('hidden',t!=='new'); $('#viewManage').classList.toggle('hidden',t!=='manage'); }
+
+async function loadSessions(){
+  sessions=await jget('/api/sessions');
+  const el=$('#sessions'); el.innerHTML='';
+  sessions.forEach(s=>{
+    const d=document.createElement('div'); d.className='sess'; d.dataset.id=s.id;
+    const start=s.first_wall?Number(s.first_wall):null, end=s.last_wall?Number(s.last_wall):null;
+    const dur=(start&&end)?fmtDur((end-start)/1000):'';
+    d.innerHTML=`<input type="checkbox"><div class="meta"><div class="t">${esc(s.device||'Session')} · <span class="muted">${s.id}</span></div>
+      <div class="d">${fmtRange(start,end)} ${dur?('· '+dur):''}</div></div>
+      <div class="b">${(Number(s.record_count)||0).toLocaleString()} rec</div>`;
+    d.onclick=(e)=>{ if(e.target.tagName!=='INPUT'){ const c=d.querySelector('input'); c.checked=!c.checked; } toggleSel(s.id, d.querySelector('input').checked, d); };
+    el.appendChild(d);
+  });
+}
+function toggleSel(id, on, el){
+  el.classList.toggle('sel',on);
+  selected = sessions.filter(s=> [...document.querySelectorAll('.sess')].find(d=>d.dataset.id===s.id)?.querySelector('input').checked )
+    .map(s=>s.id);
+  // order legs by session start time
+  selected.sort((a,b)=>{ const A=sessions.find(s=>s.id===a),B=sessions.find(s=>s.id===b); return (Number(A?.first_wall)||0)-(Number(B?.first_wall)||0); });
+  $('#selCount').textContent = selected.length?`(${selected.length} selected)`:'';
+  $('#editor').classList.toggle('hidden', selected.length===0);
+  if(selected.length) refreshEditor();
+}
+function colorFor(sid){ return LEG_COLORS[selected.indexOf(sid)%LEG_COLORS.length]; }
+
+async function refreshEditor(){
+  // legs summary
+  $('#legs').innerHTML = selected.map(sid=>{ const s=sessions.find(x=>x.id===sid);
+    return `<span class="leg"><span class="dot" style="background:${colorFor(sid)}"></span>${esc(s?.device||sid)} · ${fmtRange(Number(s?.first_wall),Number(s?.last_wall))}</span>`; }).join('');
+  drawMap();
+  loadGallery();
+}
+function ensureMap(){ if(map) return; map=L.map('map',{zoomControl:true,attributionControl:false}).setView([20,0],2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,subdomains:'abcd'}).addTo(map); trackLayer=L.layerGroup().addTo(map); }
+async function drawMap(){
+  ensureMap(); trackLayer.clearLayers();
+  const all=[];
+  for(const sid of selected){
+    const pts=(await jget('/api/track?session='+encodeURIComponent(sid))).filter(p=>p.lat!=null);
+    const line=pts.map(p=>[p.lat,p.lon]); if(line.length){ all.push(...line);
+      if(line.length>1) L.polyline(line,{color:colorFor(sid),weight:3,opacity:.85}).addTo(trackLayer);
+      L.circleMarker(line[line.length-1],{radius:5,color:'#fff',weight:2,fillColor:colorFor(sid),fillOpacity:1}).addTo(trackLayer);
+    }
+  }
+  if(all.length){ try{ map.fitBounds(L.latLngBounds(all).pad(.2)); setTimeout(()=>map.invalidateSize(),50);}catch(e){} }
+}
+async function loadGallery(){
+  galItems=await jget('/api/gallery?sessions='+encodeURIComponent(selected.join(',')));
+  $('#galCount').textContent = galItems.length?`(${galItems.length} items, ${excluded.size} excluded)`:'(no media)';
+  const g=$('#gallery'); g.innerHTML='';
+  galItems.forEach(it=>{
+    const d=document.createElement('div'); d.className='g'+(excluded.has(it.path)?' ex':''); d.dataset.path=it.path; d.title=it.filename;
+    const dot=`<span class="lg" style="background:${colorFor(it.session_id)}"></span>`;
+    if(it.type==='video') d.innerHTML=`<video src="${it.url}#t=0.1" muted preload="metadata"></video><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`;
+    else d.innerHTML=`<img src="${it.url}" loading="lazy" alt="">${dot}`;
+    d.onclick=()=>{ if(excluded.has(it.path)) excluded.delete(it.path); else excluded.add(it.path); d.classList.toggle('ex'); $('#galCount').textContent=`(${galItems.length} items, ${excluded.size} excluded)`; };
+    g.appendChild(d);
+  });
+}
+async function save(publish){
+  const body={ title:$('#title').value||'Journey', description:$('#desc').value||'', sessionIds:selected, excluded:[...excluded], published:publish };
+  let pub;
+  if(editingId) pub=await jsend('PATCH','/admin/publications/'+editingId, body);
+  else pub=await jsend('POST','/admin/publications', body);
+  editingId=pub.id; $('#editing').textContent='editing '+pub.id.slice(0,8)+'…';
+  const link=location.origin+'/publish/'+pub.id;
+  $('#result').className=''; $('#result').innerHTML = publish
+    ? `<div class="card" style="margin-top:12px"><h2>Published ✓</h2><div class="publink" id="pubLink">${link}</div>
+       <div class="bar"><button class="btn" onclick="copyLink('${link}')">Copy link</button><a class="btn ghost" href="${link}" target="_blank">Open</a></div></div>`
+    : `<div class="hint" style="margin-top:10px">Saved as draft (${pub.id.slice(0,8)}). Publish when ready.</div>`;
+  toast(publish?'Published':'Draft saved');
+}
+function copyLink(l){ navigator.clipboard.writeText(l).then(()=>toast('Link copied')); }
+
+async function loadPubs(){
+  const list=await jget('/admin/publications'); const el=$('#pubs');
+  if(!list.length){ el.innerHTML='<div class="muted">No publications yet. Build one in the Build tab.</div>'; return; }
+  el.innerHTML=list.map(p=>{
+    const link=location.origin+'/publish/'+p.id;
+    return `<div class="puprow"><div class="g1"><div style="font-weight:600">${esc(p.title)}</div>
+      <div class="hint">${(p.sessionIds||[]).length} legs · ${(p.excluded||[]).length} excluded · ${new Date(p.updatedAt).toLocaleString()}</div>
+      ${p.published?`<div class="publink">${link}</div>`:''}</div>
+      <span class="pill ${p.published?'pub':'draft'}">${p.published?'PUBLISHED':'DRAFT'}</span>
+      ${p.published?`<button class="btn ghost" onclick="copyLink('${link}')">Copy</button><a class="btn ghost" href="${link}" target="_blank">Open</a><button class="btn" onclick="setPub('${p.id}',false)">Unpublish</button>`:`<button class="btn primary" onclick="setPub('${p.id}',true)">Publish</button>`}
+      <button class="btn ghost" onclick="editPub('${p.id}')">Edit</button>
+      <button class="btn ghost" onclick="delPub('${p.id}')">Delete</button></div>`;
+  }).join('');
+}
+async function setPub(id,published){ await jsend('PATCH','/admin/publications/'+id,{published}); toast(published?'Published':'Unpublished'); loadPubs(); }
+async function delPub(id){ if(!confirm('Delete this publication? (the sessions themselves are untouched)')) return; await jsend('DELETE','/admin/publications/'+id); toast('Deleted'); loadPubs(); }
+async function editPub(id){
+  const p=await jget('/admin/publications/'+id);
+  editingId=p.id; $('#title').value=p.title; $('#desc').value=p.description; excluded=new Set(p.excluded||[]);
+  showTab('new');
+  // check the sessions
+  selected=[...(p.sessionIds||[])];
+  document.querySelectorAll('.sess').forEach(d=>{ const on=selected.includes(d.dataset.id); d.querySelector('input').checked=on; d.classList.toggle('sel',on); });
+  selected.sort((a,b)=>{ const A=sessions.find(s=>s.id===a),B=sessions.find(s=>s.id===b); return (Number(A?.first_wall)||0)-(Number(B?.first_wall)||0); });
+  $('#selCount').textContent=`(${selected.length} selected)`; $('#editor').classList.remove('hidden');
+  $('#editing').textContent='editing '+p.id.slice(0,8)+'…';
+  refreshEditor();
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+loadSessions();
+</script>
+</body>
+</html>

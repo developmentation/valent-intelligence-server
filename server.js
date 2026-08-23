@@ -516,19 +516,12 @@ app.get('/api/transcript', requireAdmin, async (req, res) => {
   res.json({ count: segs.length, text: segs.map((x) => x.text).join(' '), segments: segs.slice(-600) });
 });
 
-app.get('/api/track', requireAdmin, async (req, res) => {
-  const s = req.query.session;
-  const args = [];
-  let where = `stream='location'`;
-  if (s) { args.push(s); where += ` and session_id=$1`; }
-  // Level-of-detail: decimate to ~perSession points PER session (keeping first + last so no journey
-  // vanishes and endpoints stay put). A single ordered scan; the map gets a smooth line without
-  // shipping tens of thousands of points. (Persisted multi-tier rollups can replace this at huge scale.)
-  const perSession = Math.min(6000, Math.max(300, parseInt(req.query.max, 10) || (s ? 4000 : 1200)));
-  // Decimate ACROSS THE WHOLE SESSION (keep first + last + every Nth) so the full time span is covered
-  // — never truncate to the first N (that lopped off the afternoon on a 44k-fix day). This is also what
-  // the phone smooths over (it caps its live-track nodes), so smoothing the evenly-decimated points
-  // reproduces the phone's line. geotrack.clean below Kalman-smooths whatever it's handed.
+// Shared de-noised track builder. Decimate across each session's FULL span (never truncate), then run
+// the EXACT phone algorithm (geotrack.clean = Kalman + RTS + glitch gate). Used by /api/track (admin,
+// live tail merged) and the public publication API (fixed session set, no live tail).
+async function trackForSessions(sessionIds, perSession, mergeLiveTail) {
+  const args = []; let where = `stream='location'`;
+  if (sessionIds && sessionIds.length) { args.push(sessionIds); where += ` and session_id = any($1)`; }
   const q = await pool.query(
     `with pts as (
        select session_id, wall,
@@ -546,35 +539,130 @@ app.get('/api/track', requireAdmin, async (req, res) => {
     if (!bySession.has(r.session_id)) bySession.set(r.session_id, []);
     bySession.get(r.session_id).push({ lat: r.lat, lon: r.lon, wall: Number(r.wall) || 0, acc: r.acc != null ? Number(r.acc) : 20 });
   }
-  // Merge the fresh in-memory live tail (≤~10s old) so the smoothed head is current, not a chunk behind.
-  const mergeLive = (sid) => {
-    const t = liveTracks.get(sid);
-    if (!t || !t.pts.length) return;
-    if (!bySession.has(sid)) bySession.set(sid, []);
-    const arr = bySession.get(sid);
-    let lastWall = 0; for (const p of arr) if (p.wall > lastWall) lastWall = p.wall;
-    for (const p of t.pts) if ((p.wall || 0) > lastWall) arr.push({ lat: p.lat, lon: p.lon, wall: p.wall, acc: p.acc != null ? Number(p.acc) : 20 });
-  };
-  if (s) mergeLive(s); else for (const sid of liveTracks.keys()) mergeLive(sid);
-
-  // Run each session's fixes through the EXACT phone algorithm (geotrack.clean = Kalman + RTS + glitch
-  // gate), then LOD-decimate the SMOOTHED track (keep first + last so no journey vanishes).
+  if (mergeLiveTail) {
+    const merge = (sid) => {
+      const t = liveTracks.get(sid); if (!t || !t.pts.length) return;
+      if (!bySession.has(sid)) bySession.set(sid, []);
+      const arr = bySession.get(sid); let lastWall = 0; for (const p of arr) if (p.wall > lastWall) lastWall = p.wall;
+      for (const p of t.pts) if ((p.wall || 0) > lastWall) arr.push({ lat: p.lat, lon: p.lon, wall: p.wall, acc: p.acc != null ? Number(p.acc) : 20 });
+    };
+    if (sessionIds && sessionIds.length) sessionIds.forEach(merge); else for (const sid of liveTracks.keys()) merge(sid);
+  }
   const out = [];
   for (const [sid, pts] of bySession) {
     if (!pts.length) continue;
     pts.sort((a, b) => a.wall - b.wall);
     const fixes = pts.map((p) => ({ lat: p.lat, lon: p.lon, frac: p.wall / 1000, accuracy: p.acc }));
-    const cleaned = geotrack.clean(fixes, 1.0);
-    const step = Math.max(1, Math.ceil(cleaned.length / perSession));
-    for (let i = 0; i < cleaned.length; i++) {
-      if (i === 0 || i === cleaned.length - 1 || i % step === 0) {
-        const c = cleaned[i];
-        out.push({ session_id: sid, wall: Math.round(c.frac * 1000), lat: c.lat, lon: c.lon, speed: c.speedMps });
-      }
-    }
+    for (const c of geotrack.clean(fixes, 1.0)) out.push({ session_id: sid, wall: Math.round(c.frac * 1000), lat: c.lat, lon: c.lon, speed: c.speedMps });
   }
   out.sort((a, b) => (a.session_id < b.session_id ? -1 : a.session_id > b.session_id ? 1 : a.wall - b.wall));
-  res.json(out);
+  return out;
+}
+app.get('/api/track', requireAdmin, async (req, res) => {
+  const s = req.query.session;
+  const multi = req.query.sessions ? String(req.query.sessions).split(',').map((x) => x.trim()).filter(Boolean) : null;
+  const ids = multi && multi.length ? multi : (s ? [s] : null);
+  const perSession = Math.min(6000, Math.max(300, parseInt(req.query.max, 10) || (ids ? 4000 : 1200)));
+  res.json(await trackForSessions(ids, perSession, true));
+});
+
+// ===================== Publications: curated, shareable collections of sessions =====================
+// Curation + publish/unpublish are ADMIN-only. The published view (/publish/:id, /api/pub/:id,
+// /pub/:id/media/*) is OPEN (password-free UUID) and serves ONLY published publications, ENFORCING the
+// excluded-media list at the API. A publication is pure metadata over sessions the server already holds.
+const pubRow = (r) => ({
+  id: r.id, title: r.title, description: r.description, sessionIds: r.session_ids, excluded: r.excluded,
+  published: r.published, createdAt: r.created_at, updatedAt: r.updated_at,
+  publishedAt: r.published_at, unpublishedAt: r.unpublished_at,
+});
+const asStrArr = (v) => (Array.isArray(v) ? v.map(String) : null);
+
+app.get('/admin/publications', requireAdmin, async (_req, res) => {
+  const q = await pool.query('select * from publications order by updated_at desc limit 200');
+  res.json(q.rows.map(pubRow));
+});
+app.get('/admin/publications/:id', requireAdmin, async (req, res) => {
+  const q = await pool.query('select * from publications where id=$1', [req.params.id]);
+  if (!q.rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(pubRow(q.rows[0]));
+});
+app.post('/admin/publications', requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const id = crypto.randomUUID();
+  await pool.query(
+    `insert into publications (id, title, description, session_ids, excluded, published,
+       published_at) values ($1,$2,$3,$4,$5,$6, case when $6 then now() else null end)`,
+    [id, String(b.title || 'Journey').slice(0, 200), String(b.description || '').slice(0, 4000),
+     JSON.stringify(asStrArr(b.sessionIds) || []), JSON.stringify(asStrArr(b.excluded) || []), !!b.published]);
+  res.json(pubRow((await pool.query('select * from publications where id=$1', [id])).rows[0]));
+});
+app.patch('/admin/publications/:id', requireAdmin, async (req, res) => {
+  const b = req.body || {}; const id = req.params.id;
+  const cur = (await pool.query('select * from publications where id=$1', [id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'not found' });
+  const title = b.title != null ? String(b.title).slice(0, 200) : cur.title;
+  const description = b.description != null ? String(b.description).slice(0, 4000) : cur.description;
+  const sessionIds = asStrArr(b.sessionIds) || cur.session_ids;
+  const excluded = asStrArr(b.excluded) || cur.excluded;
+  const published = typeof b.published === 'boolean' ? b.published : cur.published;
+  await pool.query(
+    `update publications set title=$2, description=$3, session_ids=$4, excluded=$5, published=$6,
+       published_at = case when $6 and published_at is null then now() else published_at end,
+       unpublished_at = case when not $6 and $6 is distinct from published then now() else unpublished_at end,
+       updated_at = now() where id=$1`,
+    [id, title, description, JSON.stringify(sessionIds), JSON.stringify(excluded), published]);
+  res.json(pubRow((await pool.query('select * from publications where id=$1', [id])).rows[0]));
+});
+app.delete('/admin/publications/:id', requireAdmin, async (req, res) => {
+  await pool.query('delete from publications where id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+// ---- public (no auth): only PUBLISHED publications, exclusions enforced ----
+async function loadPublished(id) {
+  const r = (await pool.query('select * from publications where id=$1 and published=true', [id])).rows[0];
+  return r || null;
+}
+app.get('/api/pub/:id', async (req, res) => {
+  const pub = await loadPublished(req.params.id);
+  if (!pub) return res.status(404).json({ error: 'not found' });
+  const sids = (pub.session_ids || []).map(String);
+  if (!sids.length) return res.json({ id: pub.id, title: pub.title, description: pub.description, legs: [], track: [], media: [] });
+  const legRows = (await pool.query(
+    'select id, device, first_wall, last_wall, tz_offset_min from sessions where id = any($1)', [sids])).rows;
+  const order = new Map(sids.map((s, i) => [s, i]));
+  legRows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  const track = await trackForSessions(sids, 4000, false);
+  const excl = new Set((pub.excluded || []).map(String));
+  const mediaRows = (await pool.query(
+    `select session_id, filename, path, bytes, received_at from files
+     where kind='media' and session_id = any($1) order by received_at asc limit 5000`, [sids])).rows;
+  const media = mediaRows.filter((m) => !excl.has(m.path)).map((m) => ({
+    session_id: m.session_id, filename: m.filename, bytes: Number(m.bytes || 0), received_at: m.received_at,
+    url: `/pub/${pub.id}/media/${m.path.split(path.sep).join('/')}`,
+    type: /\.(mp4|mov|webm|mkv)$/i.test(m.filename) ? 'video' : 'image',
+  }));
+  res.json({
+    id: pub.id, title: pub.title, description: pub.description, publishedAt: pub.published_at,
+    legs: legRows.map((l) => ({ session_id: l.id, title: l.device,
+      first_wall: l.first_wall == null ? null : Number(l.first_wall),
+      last_wall: l.last_wall == null ? null : Number(l.last_wall), tz_offset_min: l.tz_offset_min })),
+    track, media,
+  });
+});
+app.get('/pub/:id/media/*', async (req, res) => {
+  const pub = await loadPublished(req.params.id);
+  if (!pub) return res.status(404).end();
+  const rel = decodeURIComponent(req.params[0] || '');
+  if (rel.includes('..')) return res.status(400).end();
+  if (!(pub.session_ids || []).map(String).includes(rel.split('/')[0])) return res.status(404).end();  // not a leg
+  if ((pub.excluded || []).map(String).includes(rel)) return res.status(404).end();                    // excluded → enforced
+  try { storage.serve(res, rel); } catch (_) { res.status(400).end(); }
+});
+app.get('/publish/:id', async (req, res) => {
+  const pub = await loadPublished(req.params.id);
+  if (!pub) return res.status(404).type('html').send('<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><body style="background:#07090d;color:#8a8f98;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0"><div>This publication isn’t available.</div>');
+  res.sendFile(path.join(__dirname, 'public', 'publish.html'));
 });
 
 // Every stream captured (all sessions or one), for a comprehensive live view — not just the 4 the
@@ -637,12 +725,14 @@ app.get('/api/audio/hls', requireAdmin, async (req, res) => {
 
 app.get('/api/gallery', requireAdmin, async (req, res) => {
   const s = req.query.session;
+  const multi = req.query.sessions ? String(req.query.sessions).split(',').map((x) => x.trim()).filter(Boolean) : null;
   const args = [];
   let where = `kind='media'`;
-  if (s) { args.push(s); where += ` and session_id=$1`; }
+  if (multi && multi.length) { args.push(multi); where += ` and session_id = any($1)`; }
+  else if (s) { args.push(s); where += ` and session_id=$1`; }
   const q = await pool.query(
     `select session_id, stream, filename, path, bytes, received_at
-     from files where ${where} order by received_at desc limit 500`, args);
+     from files where ${where} order by received_at desc limit 2000`, args);
   res.json(q.rows.map(r => ({
     ...r,
     url: '/media/' + r.path.split(path.sep).join('/'),
@@ -843,6 +933,8 @@ app.use('/public', requireAdmin, express.static(path.join(__dirname, 'public')))
 app.get('/', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
 // ---- /live: the full-screen live media-player view (same password gate) ----
 app.get('/live', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'live.html')));
+// ---- /curate: build/manage publications (password-gated). Published views live at /publish/:id (open). ----
+app.get('/curate', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'curate.html')));
 
 // ---- pages ----
 function loginPage(err, next) {
