@@ -60,6 +60,27 @@ const SS = 'C:/Users/Syma/AppData/Local/Temp/claude/c--dev-valent-intelligence-c
   const keptStatus = keptPath ? await chk(keptPath) : 'n/a';
   log('EXCLUSION enforce: excluded ->', exStatus, '(want 404) | kept ->', keptStatus, '(want 200)');
 
+  // AUDIO must NOT be reachable or referenced: /api/pub lists no .aac, and a guessed audio path 404s.
+  const apiPub = await (await pub.request.get(base + '/api/pub/' + uuid)).json();
+  const anyAac = (apiPub.media || []).some(m => /\.aac$/i.test(m.url) || /\.aac$/i.test(m.filename || ''));
+  const memberSid = (apiPub.legs || [])[0] && apiPub.legs[0].session_id;
+  const audioGuess = memberSid ? `${memberSid}/audio/${memberSid}.040_000000.aac` : null;
+  const audioStatus = audioGuess ? await chk(audioGuess) : 'n/a';
+  log('AUDIO closed: /api/pub lists .aac ->', anyAac, '(want false) | guessed .aac ->', audioStatus, '(want 404)');
+
+  // SLIDESHOW: open it from the public page and confirm it renders (stage, place, filmstrip).
+  await q.click('.playbtn');
+  await q.waitForSelector('#show.open', { timeout: 8000 }).catch(() => {});
+  await q.waitForFunction(() => document.querySelectorAll('#swFilms .thumb').length > 0, { timeout: 8000 }).catch(() => {});
+  await q.waitForTimeout(2500);
+  const showOpen = await q.$eval('#show', e => e.classList.contains('open')).catch(() => false);
+  const swPlace = await q.$eval('#swPlace', e => e.textContent).catch(() => '(none)');
+  const swProg = await q.$eval('#swProg', e => e.textContent).catch(() => '(none)');
+  const swThumbs = await q.$$eval('#swFilms .thumb', els => els.length).catch(() => 0);
+  const swStageOn = await q.$$eval('#show .layer.on', els => els.length).catch(() => 0);
+  log('SLIDESHOW: open', showOpen, '| place:', swPlace, '| progress:', swProg, '| thumbs:', swThumbs, '| stage-layer-on:', swStageOn);
+  await q.screenshot({ path: SS + 'pub_slideshow.png' });
+
   // --- unpublish via admin API, then public must 404 ---
   await admin.request.patch(base + '/admin/publications/' + uuid, { data: { published: false } });
   const afterPub = await pub.request.get(base + '/api/pub/' + uuid);

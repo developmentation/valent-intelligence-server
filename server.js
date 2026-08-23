@@ -655,8 +655,16 @@ app.get('/pub/:id/media/*', async (req, res) => {
   if (!pub) return res.status(404).end();
   const rel = decodeURIComponent(req.params[0] || '');
   if (rel.includes('..')) return res.status(400).end();
-  if (!(pub.session_ids || []).map(String).includes(rel.split('/')[0])) return res.status(404).end();  // not a leg
-  if ((pub.excluded || []).map(String).includes(rel)) return res.status(404).end();                    // excluded → enforced
+  const sids = (pub.session_ids || []).map(String);
+  if (!sids.includes(rel.split('/')[0])) return res.status(404).end();          // not a leg
+  if ((pub.excluded || []).map(String).includes(rel)) return res.status(404).end();  // excluded → enforced
+  // ALLOWLIST: serve only files that are actually MEDIA (photos/videos) in a member session. This keeps
+  // audio (kind='audio') and every other captured stream (gnss, motion, sensor…) unreachable through the
+  // public link — a guessed .aac path 404s. Audio is a future feature; the public API neither serves nor
+  // references it.
+  const ok = (await pool.query(
+    `select 1 from files where kind='media' and session_id = any($1) and path=$2 limit 1`, [sids, rel])).rows[0];
+  if (!ok) return res.status(404).end();
   try { storage.serve(res, rel); } catch (_) { res.status(400).end(); }
 });
 app.get('/publish/:id', async (req, res) => {
