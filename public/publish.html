@@ -58,7 +58,7 @@
 
 <div id="lb"><button class="x" onclick="closeLb()">×</button><button class="nav" id="lbPrev" onclick="stepLb(-1)">‹</button><button class="nav" id="lbNext" onclick="stepLb(1)">›</button><div id="lbBody"></div><div class="cap" id="lbCap"></div></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const LEG_COLORS=['#ff5a3c','#3ce38f','#5b9dff','#ffb454','#c07cff','#38e1c0','#ff7ab6','#9fd356'];
@@ -109,6 +109,8 @@ function render(){
   renderGrid();
 }
 function drawMap(){
+  if(typeof L==='undefined'){ return void setTimeout(drawMap,80); } // Leaflet is deferred; wait for it
+  if(map) return;
   map=L.map('map',{zoomControl:true,attributionControl:true,scrollWheelZoom:false}).setView([20,0],2);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,subdomains:'abcd',attribution:'© OpenStreetMap © CARTO'}).addTo(map);
   const all=[]; const bySess={};
