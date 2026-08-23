@@ -56,6 +56,31 @@ Served by `publish.html`, which fetches `/api/pub/:id` and renders:
   clock where the person actually was, not UTC or the viewer's zone);
 - a gallery grid (leg-color dots, local timestamps, video badges) with a keyboard-navigable lightbox.
 
+### Slideshow (cinematic replay)
+
+The published page has a **Play slideshow** button that opens a full-screen cinematic player — the same
+visual language as `/live`, but spanning the **whole publication** across all its legs. It replays every
+photo/clip in chronological order with a cross-fading stage (blurred backdrop + Ken Burns), and for each
+item drives a fusion HUD + map exactly as the live view does:
+
+- the **place name** (reverse-geocoded), coordinates, and **subject-local time** of that photo;
+- chips: which **leg** (colored, "leg 2/3"), the **speed** at that moment (from the de-noised track),
+  and the **journey** total (distance · duration);
+- a mini map (tap to expand) showing the full colored per-leg track with a **head marker that moves** to
+  where each photo was taken (nearest de-noised fix by time);
+- a filmstrip; play/pause; ←/→ and space; Esc closes.
+
+It is driven entirely by the already-loaded `/api/pub` data — no extra endpoints, and (see below) **no
+audio**. The underlying page is hidden while it's open so the hero map's Leaflet panes can't bleed through.
+
+### Audio is not served or referenced (future feature)
+
+The public surface exposes **no audio**. `/api/pub/:id` builds `media` from `kind='media'` only (photos +
+videos), so audio clips never appear in the JSON, and `/pub/:id/media/*` is an **allowlist** — it serves a
+path only if a `kind='media'` file with that exact path exists in a member session. A guessed `…/audio/….aac`
+path (or any other stream: gnss, motion, sensor) returns **404**. The viewer UI likewise has no audio,
+transcript, scene, or now-playing affordances. Audio playback is a deliberate future feature.
+
 `/api/pub/:id` returns `{ id, title, description, publishedAt, legs[], track[], media[] }`:
 - **`legs`** — per session: `session_id`, `first_wall`/`last_wall` (ms), `tz_offset_min`.
 - **`track`** — the merged, **de-noised** GPS across all legs (accuracy-weighted constant-velocity Kalman
