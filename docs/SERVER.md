@@ -54,6 +54,12 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 | `GET /api/manifest?session=` | JWT | per-session streams manifest (visualizer entry point) |
 | `GET /api/gallery?session=` | JWT | media items with URLs |
 | `GET /media/*` | JWT | serve a stored file (via the storage seam) |
+| `GET /curate` | JWT | publication builder UI (see PUBLICATIONS.md) |
+| `GET · POST /admin/publications` | JWT | list / create publications |
+| `GET · PATCH · DELETE /admin/publications/:id` | JWT | read / edit (incl. publish/unpublish) / delete a publication |
+| `GET /publish/:id` | **none** | public journey viewer (only if published; else 404) |
+| `GET /api/pub/:id` | **none** | public publication JSON: legs + de-noised track + gallery, **exclusions removed** |
+| `GET /pub/:id/media/*` | **none** | public media — 404s unless published, a member session, AND not excluded |
 | `GET /download` · `/download/app.apk` · `/download/apk/:name` | — | APK install page + downloads |
 | `GET /setup` | JWT | QR to provision the phone |
 
@@ -71,6 +77,10 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 - `batches` — one row per received bulk batch (sha256 unique).
 - `errors` — device-reported crashes/errors: level/kind/component/message/where/stack/fields, `wall_ms`,
   **fingerprint (unique → dedup)**. Fed by `/ingest/errors`, read by `/admin/errors`. See ERROR-CATCHER.md.
+- `publications` — curated, shareable collections: id (UUID, the public URL), title/description,
+  **`session_ids`** (ordered legs), **`excluded`** (media paths to hide), `published` flag. Pure metadata
+  over sessions the server already holds — nothing is copied. Admin curates; the published view is open.
+  See PUBLICATIONS.md.
 - `schema_migrations` — applied migration ledger.
 
 The raw files on disk are canonical; `records` is a rebuildable index (keeps Postgres small).

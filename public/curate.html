@@ -121,7 +121,7 @@
 </div>
 <div id="toast"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const LEG_COLORS=['#ff5a3c','#3ce38f','#5b9dff','#ffb454','#c07cff','#38e1c0','#ff7ab6','#9fd356'];
@@ -172,6 +172,7 @@ async function refreshEditor(){
 function ensureMap(){ if(map) return; map=L.map('map',{zoomControl:true,attributionControl:false}).setView([20,0],2);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,subdomains:'abcd'}).addTo(map); trackLayer=L.layerGroup().addTo(map); }
 async function drawMap(){
+  if(typeof L==='undefined'){ return void setTimeout(drawMap,80); } // Leaflet is deferred; wait for it
   ensureMap(); trackLayer.clearLayers();
   const all=[];
   for(const sid of selected){
@@ -185,6 +186,8 @@ async function drawMap(){
 }
 async function loadGallery(){
   galItems=await jget('/api/gallery?sessions='+encodeURIComponent(selected.join(',')));
+  // show in chronological journey order (endpoint returns newest-first; the public page is oldest-first)
+  galItems.sort((a,b)=>{ const A=Date.parse(a.received_at)||0,B=Date.parse(b.received_at)||0; return A-B; });
   $('#galCount').textContent = galItems.length?`(${galItems.length} items, ${excluded.size} excluded)`:'(no media)';
   const g=$('#gallery'); g.innerHTML='';
   galItems.forEach(it=>{
