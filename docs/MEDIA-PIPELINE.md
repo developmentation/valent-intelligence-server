@@ -67,6 +67,29 @@ Media uploads through **`POST /ingest/live/photo`** (same route for photo and vi
 The app side (which lane the phone uses, and the retry that was missing for off-grid captures) is in the
 capture repo: `claude/docs/SERVER-SYNC.md`.
 
+## Reliable large uploads: resumable, checksum-validated chunks (`uploadpipe.js`)
+
+For **longform / multi-GB** media that a single request can't push past the CDN edge, the app uploads in
+**chunks** (8 MB), and the server verifies integrity at two levels — so a completed upload is guaranteed
+byte-exact. Endpoints (all Bearer **INGEST_TOKEN**, mounted above the global JSON parser):
+
+- `POST /ingest/upload/init` — `{session, filename, stream, size, sha256, chunkSize}` → `{uploadId,
+  totalChunks, received:[…]}`. `uploadId` is derived from `(session, filename, sha256)` so a re-init of an
+  interrupted upload returns which chunks already landed → the client sends only the rest (**resume**).
+- `PUT /ingest/upload/chunk` — headers `x-upload-id`, `x-chunk-index`, `x-chunk-sha256`; raw chunk body
+  streamed to disk. The server **verifies each chunk's SHA-256 on arrival** (mismatch → 422, re-send).
+- `POST /ingest/upload/complete` — `{uploadId}`. Reassembles the parts in order and **verifies the
+  WHOLE-FILE SHA-256** against what `init` declared. Only a byte-exact match is committed (file row +
+  transcode enqueue); a mismatch discards the staging and the client restarts. Missing chunks → 409 with
+  the `missing:[…]` list.
+- `GET /ingest/upload/status?id=` — `{received, missing, totalChunks}` for resume.
+
+Staging lives on disk under `MEDIA_ROOT/_uploads/<id>/` (meta.json + `<index>.part`); everything streams
+(constant memory). Chunks are small, so this sidesteps the edge single-request ceiling entirely — the path
+to the 8 GB target. Verified end-to-end: per-chunk 422 on corruption, 409 + resume of the missing chunk,
+whole-file SHA match, exact byte count. Client: `claude/.../sync/ChunkedUploader.kt` (used by `SyncWorker`
+for media over 24 MB; smaller media take the single-shot live lane).
+
 ## Serving videos fast: the web rendition ladder (`videopipe.js`)
 
 Captured videos are large. Every server surface — dashboard, `/live`, curate, published — now serves a
