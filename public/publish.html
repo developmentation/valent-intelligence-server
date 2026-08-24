@@ -216,8 +216,8 @@ function localTime(ms, tz){ if(ms==null) return ''; const d=new Date(Number(ms)+
 // Load a video poster with retries — a just-synced video may still be transcoding, so the poster 404s at
 // first and then appears; retry a few times before falling back to the play-badge box.
 function posterLoad(im, url, onOk){ if(!im) return; let t=0;
-  im.onload=()=>{ onOk&&onOk(); };
-  im.onerror=()=>{ if(t++<5){ setTimeout(()=>{ im.src=url+(url.includes('?')?'&':'?')+'r='+t+'_'+Date.now(); }, 3000); } else { onOk&&onOk(); im.remove(); } };
+  im.onload=()=>{ im.classList.add('rdy'); onOk&&onOk(); };   // .rdy = opacity:1 (imgs default to opacity:0)
+  im.onerror=()=>{ if(t++<8){ setTimeout(()=>{ im.src=url+(url.includes('?')?'&':'?')+'r='+t+'_'+Date.now(); }, 3000); } else { onOk&&onOk(); im.remove(); } };
   im.src=url; }
 function localDay(ms, tz){ if(ms==null) return ''; const d=new Date(Number(ms)+(tz||0)*60000); return d.toISOString().substr(0,10); }
 
