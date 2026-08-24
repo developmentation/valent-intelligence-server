@@ -285,8 +285,8 @@ function renderGrid(){
     const d=document.createElement('div'); d.className='cell loading';
     const dot=`<span class="lg" style="background:${legColor[m.session_id]||'#ff5a3c'}"></span>`;
     const tm=`<div class="tm">${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))}</div>`;
-    if(m.type==='video'){ d.innerHTML=`<video src="${m.url}#t=0.1" muted preload="metadata"></video><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}${tm}`;
-      d.querySelector('video').addEventListener('loadeddata',()=>d.classList.remove('loading'),{once:true}); }
+    if(m.type==='video'){ d.innerHTML=`<img src="${m.url}?poster=1&w=500"><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}${tm}`;
+      const im=d.querySelector('img'); im.onload=()=>d.classList.remove('loading'); im.onerror=()=>{ d.classList.remove('loading'); im.remove(); }; }
     else { const im=new Image(); im.onload=()=>{d.classList.remove('loading');im.classList.add('rdy');}; im.src=m.url+'?w=500'; d.appendChild(im); d.insertAdjacentHTML('beforeend',dot+tm); }
     d.onclick=()=>openLb(i);
     g.appendChild(d);
@@ -294,7 +294,7 @@ function renderGrid(){
 }
 function openLb(i){ lbIdx=i; const m=shown[i]; if(!m) return;
   $('#lbBody').innerHTML = m.type==='video'
-    ? `<video class="media" src="${m.url}" controls autoplay playsinline></video>`
+    ? `<video class="media" src="${m.url}" poster="${m.url}?poster=1&w=1600" controls autoplay playsinline></video>`
     : `<img class="media" src="${m.url}?w=1600">`;
   const cap=`${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))} · ${i+1} / ${shown.length}`;
   $('#lbCap').innerHTML=`<span>${cap}</span><a class="dlorig" href="${m.url}?dl=1" download title="Download the full-resolution original">↓ original${m.bytes?` · ${(m.bytes/1048576).toFixed(1)} MB`:''}</a>`;
@@ -390,7 +390,7 @@ function swShow(idx,{fade=true}={}){
   const done=()=>{ if(swapped||gen!==sw.gen) return; swapped=true; swStageLoading(false);
     sw.back.classList.add('on'); sw.front.classList.remove('on'); [sw.front,sw.back]=[sw.back,sw.front]; };
   if(it.type==='video'){
-    const v=document.createElement('video'); v.className='fg'; v.src=it.url; v.muted=true; v.autoplay=true; v.playsInline=true; v.controls=true; v.preload='auto';
+    const v=document.createElement('video'); v.className='fg'; v.src=it.url; v.poster=it.url+'?poster=1&w=1600'; v.muted=true; v.autoplay=true; v.playsInline=true; v.controls=true; v.preload='auto';
     v.setAttribute('playsinline','');v.setAttribute('muted','');sw.curVideo=v;
     const tryplay=()=>{ if(gen===sw.gen) v.play().catch(()=>{}); };
     v.addEventListener('loadeddata',()=>{done();tryplay();},{once:true});
@@ -427,7 +427,7 @@ function swRenderStrip(){
   shown.forEach((it,i)=>{
     const d=document.createElement('div'); d.className='thumb'+(i===sw.idx?' cur':'');
     const dot=`<span class="lg" style="background:${legColor[it.session_id]||'#ff5a3c'}"></span>`;
-    if(it.type==='video'){ d.classList.add('vid'); d.innerHTML=`<div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`; }
+    if(it.type==='video'){ d.classList.add('vid'); d.innerHTML=`<img src="${it.url}?poster=1&w=200"><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`; const im=d.querySelector('img'); im.onerror=()=>im.remove(); }
     else { d.classList.add('loading'); const im=new Image(); im.onload=()=>{d.classList.remove('loading');im.classList.add('rdy');}; im.onerror=()=>d.classList.remove('loading'); im.src=it.url+'?w=140'; d.appendChild(im); d.insertAdjacentHTML('beforeend',dot); }
     d.onclick=()=>{ swPause(); swShow(i); };
     f.appendChild(d);

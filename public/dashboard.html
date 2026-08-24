@@ -254,7 +254,7 @@ async function loadGallery(){
   g.innerHTML = items.map((it,i)=>{
     const fresh = knownGallery.size && !knownGallery.has(it.url) ? ' fresh' : '';
     const inner = it.type==='video'
-      ? `<video src="${it.url}" muted preload="metadata"></video><span class="pv">▶</span>`
+      ? `<img loading="lazy" src="${it.url}?poster=1&w=400"><span class="pv">▶</span>`
       : `<img loading="lazy" src="${it.url}?w=400">`;
     return `<figure class="fig${fresh}" onclick="openLb(${i})">${inner}</figure>`;
   }).join('');
@@ -266,7 +266,7 @@ function navLb(d){ if(!galleryItems.length) return; lbIdx=(lbIdx+d+galleryItems.
 function renderLb(){
   const it=galleryItems[lbIdx]; if(!it) return;
   $('#lbcontent').innerHTML = it.type==='video'
-    ? `<video src="${it.url}" controls autoplay></video>`
+    ? `<video src="${it.url}" poster="${it.url}?poster=1&w=1600" controls autoplay></video>`
     : `<img src="${it.url}?w=1600">`;
   const when = it.received_at ? new Date(it.received_at).toLocaleString() : '';
   $('#lbcap').innerHTML = `<span>${it.session_id} · ${it.filename}${when?' · '+when:''}   (${lbIdx+1}/${galleryItems.length})</span> <a href="${it.url}?dl=1" download style="margin-left:12px;color:var(--violet,#8b7cff);text-decoration:none">↓ original</a>`;

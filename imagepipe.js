@@ -59,4 +59,21 @@ async function sendImage(req, res, storage, rel, downloadName) {
   }
 }
 
-module.exports = { sendImage, WIDTHS };
+// Serve an arbitrary image FILE (e.g. a video poster frame that isn't a storage key), optionally resized
+// via ?w and cached alongside it. Falls back to the source file on any failure.
+async function sendImageFile(req, res, absSrc, cacheDir, name) {
+  const w = parseInt(req.query && req.query.w, 10);
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  if (!sharp || !w || !WIDTHS.has(w)) return res.sendFile(absSrc, (e) => { if (e) res.status(404).end(); });
+  const out = path.join(cacheDir, `${name}.w${w}.jpg`);
+  if (fs.existsSync(out)) return res.sendFile(out, (e) => { if (e) res.sendFile(absSrc, (e2) => { if (e2) res.status(404).end(); }); });
+  try {
+    await sharp(absSrc, { failOn: 'none' }).rotate().resize({ width: w, withoutEnlargement: true })
+      .jpeg({ quality: 78, mozjpeg: true }).toFile(out);
+    return res.sendFile(out, (e) => { if (e) res.sendFile(absSrc, (e2) => { if (e2) res.status(404).end(); }); });
+  } catch (_) {
+    return res.sendFile(absSrc, (e) => { if (e) res.status(404).end(); });
+  }
+}
+
+module.exports = { sendImage, sendImageFile, WIDTHS };

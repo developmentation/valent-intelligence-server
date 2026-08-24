@@ -52,6 +52,7 @@ function dirAbs(root, key) {
   return p;
 }
 const rendAbs = (root, key, edge) => path.join(dirAbs(root, key), edge + '.mp4');
+const posterAbs = (root, key) => path.join(dirAbs(root, key), 'poster.jpg');
 
 const queue = [];               // pending rendition jobs {key, edge, out, src, rel}
 const inQueue = new Set();       // `${rel}@${edge}` dedupe
@@ -102,12 +103,40 @@ function runJob(job) {
   });
 }
 
+// Extract a single representative frame as a JPEG poster (tries ~1s in, falls back to the first frame for
+// very short clips). Same long-edge box as the renditions. Cached at _derived/video/<key>/poster.jpg.
+function runPoster(job) {
+  return new Promise((resolve) => {
+    if (!fs.existsSync(job.src)) { stat.failed++; return resolve(); }
+    try { fs.mkdirSync(path.dirname(job.out), { recursive: true }); } catch (_) { stat.failed++; return resolve(); }
+    const tmp = job.out + '.tmp.jpg';
+    const vf = "scale='if(gt(iw,ih),min(1280,iw),-2)':'if(gt(iw,ih),-2,min(1280,ih))'";
+    const grab = (ss, cb) => {
+      let err = '';
+      const p = spawn(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', String(ss), '-i', job.src,
+        '-frames:v', '1', '-vf', vf, '-q:v', '3', tmp], { stdio: ['ignore', 'ignore', 'pipe'] });
+      p.stderr.on('data', (d) => { err += d; });
+      p.on('error', () => cb(false, err));
+      p.on('close', (c) => cb(c === 0 && fs.existsSync(tmp) && fs.statSync(tmp).size > 0, err));
+    };
+    grab(1, (ok) => {
+      if (ok) { try { fs.renameSync(tmp, job.out); stat.done++; } catch (_) { stat.failed++; } return resolve(); }
+      try { fs.unlinkSync(tmp); } catch (_) {}
+      grab(0, (ok2, err2) => {                    // very short clip → first frame
+        if (ok2) { try { fs.renameSync(tmp, job.out); stat.done++; } catch (_) { stat.failed++; } }
+        else { stat.failed++; try { fs.unlinkSync(tmp); } catch (_) {} if (err2) console.error('poster failed', job.rel, err2.slice(0, 150)); }
+        resolve();
+      });
+    });
+  });
+}
+
 function pump() {
   while (running < CONCURRENCY && queue.length) {
     const job = queue.shift();
-    inQueue.delete(`${job.rel}@${job.edge}`);
+    inQueue.delete(`${job.rel}@${job.poster ? 'poster' : job.edge}`);
     running++;
-    runJob(job).finally(() => { running--; setImmediate(pump); });
+    (job.poster ? runPoster(job) : runJob(job)).finally(() => { running--; setImmediate(pump); });
   }
 }
 
@@ -120,9 +149,19 @@ function pushJob(storage, rel, edge) {
   queue.push({ rel, edge, out, src: storage.localPath(rel) });
 }
 
+function pushPoster(storage, rel) {
+  let out; try { out = posterAbs(storage.root, rel); } catch (_) { return; }
+  if (fs.existsSync(out)) return;
+  const tag = `${rel}@poster`;
+  if (inQueue.has(tag)) return;
+  inQueue.add(tag);
+  queue.push({ rel, poster: true, out, src: storage.localPath(rel) });
+}
+
 async function planLadder(storage, rel) {
   if (planned.has(rel)) return;
   planned.add(rel); stat.planned++;
+  pushPoster(storage, rel);   // a real extracted frame for thumbnails
   const srcLong = await probeLongEdge(storage.localPath(rel));
   // renditions at or below the source's long edge (so a 1080p source also gets a compressed 1080p web
   // version), capped by the ladder's top (4K sources top out at ~1080p web; original kept for download).
@@ -130,6 +169,15 @@ async function planLadder(storage, rel) {
   if (!edges.length) edges = [Math.min(srcLong || DEFAULT_EDGE, DEFAULT_EDGE)];  // small source → one native re-encode
   for (const e of edges) pushJob(storage, rel, e);
   pump();
+}
+
+/** Absolute path to the ready poster JPEG, or null (kicks off the ladder — which includes the poster). */
+function posterFile(storage, rel) {
+  if (!FFMPEG || !isVideo(rel)) return null;
+  let out; try { out = posterAbs(storage.root, rel); } catch (_) { return null; }
+  if (fs.existsSync(out)) return out;
+  enqueue(storage, rel);
+  return null;
 }
 
 /** Kick off the ladder for a video (async, non-blocking). No-op if ffmpeg unavailable / not a video. */
@@ -159,9 +207,12 @@ function backfill(storage, rows) {
   let enqueued = 0, alreadyWeb = 0, alreadyPlanned = 0;
   for (const r of rows) {
     if (!isVideo(r.path)) continue;
-    let done = false;
-    try { done = LADDER.some((L) => fs.existsSync(rendAbs(storage.root, r.path, L))); } catch (_) {}
-    if (done) { alreadyWeb++; continue; }
+    let hasRend = false, hasPoster = false;
+    try {
+      hasRend = LADDER.some((L) => fs.existsSync(rendAbs(storage.root, r.path, L)));
+      hasPoster = fs.existsSync(posterAbs(storage.root, r.path));
+    } catch (_) {}
+    if (hasRend && hasPoster) { alreadyWeb++; continue; }   // needs a poster even if renditions exist
     if (planned.has(r.path)) { alreadyPlanned++; continue; }
     if (enqueue(storage, r.path)) enqueued++;
   }
@@ -169,7 +220,7 @@ function backfill(storage, rows) {
 }
 
 module.exports = {
-  isVideo, enqueue, webIfReady, backfill,
+  isVideo, enqueue, webIfReady, backfill, posterFile,
   available: () => !!FFMPEG,
   status: () => ({ available: !!FFMPEG, cpus: CPUS, concurrency: CONCURRENCY, running, pending: queue.length, ...stat }),
 };

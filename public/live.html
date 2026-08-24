@@ -419,7 +419,7 @@ function showItem(idx,{fade=true}={}){
   const done=()=>{ if(swapped || gen!==stageGen) return; swapped=true; stageLoading(false); back.classList.add('on'); front.classList.remove('on'); [front,back]=[back,front]; };
   if(it.type==='video'){
     $('#unmute').classList.remove('show');
-    const v=document.createElement('video'); v.className='fg'; v.src=it.url;
+    const v=document.createElement('video'); v.className='fg'; v.src=it.url; v.poster=it.url+'?poster=1&w=1600';
     // Muted autoplay (allowed by browsers): H.264 plays fine while it buffers — no "squares" (those
     // were HEVC clips the browser can't decode at all). Reveal the first frame, then nudge play on
     // canplay; controls stay so the viewer can play/scrub/unmute. On error still show the element,
@@ -583,10 +583,10 @@ function renderStrip(){
   state.items.forEach((it,i)=>{
     const d=document.createElement('div'); d.className='thumb'+(i===state.curIdx?' cur':'');
     if(it.type==='video'){
-      // A video tile is a play badge on a dark box — deliberately NO media fetch. Five <video>/<img>
-      // thumbnails each fetching the clip was starving the STAGE video's download on mobile ("spins
-      // then stops"). No poster is a fair trade for the stage playing reliably.
+      // Video tile: a small ffmpeg-EXTRACTED poster frame (~20KB JPEG, not the whole clip — the old
+      // concern was fetching full clips which starved the stage video download) + a play badge.
       d.classList.add('vid');
+      const pim=new Image(); pim.decoding='async'; pim.src=it.url+'?poster=1&w=200'; pim.onerror=()=>pim.remove(); d.appendChild(pim);
       const pv=document.createElement('div'); pv.className='pv'; pv.innerHTML=svg('<path d="M8 5v14l11-7z"/>');
       pv.querySelector('svg').setAttribute('fill','#fff'); pv.querySelector('svg').removeAttribute('stroke');
       d.appendChild(pv);

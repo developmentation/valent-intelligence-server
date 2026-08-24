@@ -15,6 +15,13 @@ const uploadpipe = require('./uploadpipe');
 // Serve a media key: a video's cached web-optimized MP4 when ready (else the original + a background
 // transcode), or an image (resized via ?w=, or original). `?dl=1` / `?orig=1` always force the original.
 function serveMedia(req, res, rel) {
+  // ?poster=1 on a video → an ffmpeg-extracted frame as a JPEG (resizable via ?w). 404 until ready so an
+  // <img> can fall back to a play-badge box.
+  if (req.query.poster && videopipe.isVideo(rel) && !req.query.dl && !req.query.orig) {
+    const p = videopipe.posterFile(storage, rel);
+    if (p) return imagepipe.sendImageFile(req, res, p, path.dirname(p), 'poster').catch(() => res.status(404).end());
+    return res.status(404).end();
+  }
   if (!req.query.dl && !req.query.orig) {
     const web = videopipe.webIfReady(storage, rel, req.query.q);
     if (web) {
