@@ -53,11 +53,44 @@ Media uploads through **`POST /ingest/live/photo`** (same route for photo and vi
   the bulk `/ingest` lane stores sensor/audio chunks, not media).
 - **The bulk `/ingest` lane caps bodies at 64 MB** (`express.raw limit:'64mb'`) — a ~150 MB video can
   *never* go through it. Media must use the streaming live lane.
-- **Infra handles large media** — tested: a **140 MB** POST to `/ingest/live/photo` returned 200, and the
-  store already holds media up to ~172 MB. So the ceiling is not the server/Cloudflare here.
+- **No body-size cap on the media lane**, and the HTTP server timeouts are opened up for big uploads
+  (`requestTimeout=0`, `server.timeout=0`, generous headers/keep-alive) so a multi-GB video can stream to
+  disk over a slow phone link without being cut off. Tested: **250 MB** POST → 200 in ~13 s.
+- **The practical ceiling is the CDN/edge, not the app.** Requests transit Render's shared Cloudflare
+  (`server: cloudflare`, `cf-ray`), which empirically passed 250 MB. For **very** large uploads (multi-GB,
+  toward the 8 GB target) the reliable path is a **resumable/chunked upload** (tus-style) or a direct-to-
+  object-store presigned PUT that bypasses the edge — a future item; the app-side server accepts whatever
+  arrives today.
+- **Instance:** Render **`pro` (2 CPU / 4 GB)** — upgraded from `starter` so transcoding has headroom
+  (see the ladder below).
 
 The app side (which lane the phone uses, and the retry that was missing for off-grid captures) is in the
 capture repo: `claude/docs/SERVER-SYNC.md`.
+
+## Serving videos fast: the web rendition ladder (`videopipe.js`)
+
+Captured videos are large. Every server surface — dashboard, `/live`, curate, published — now serves a
+small **web-optimized MP4** by default; the ORIGINAL is untouched and downloadable (`?dl=1`).
+
+- On ingest (and on first view), a video is transcoded into a **ladder of renditions** keyed by long-edge
+  cap: **854 (~480p), 1280 (~720p, the default), 1920 (~1080p)** — only those `≤` the source's long edge
+  (a 4K source tops out at ~1080p web; a small source gets one native re-encode). H.264, `crf 28`,
+  `veryfast`, `+faststart` (moov atom up front for instant web playback), AAC audio if present. Cached at
+  `MEDIA_ROOT/_derived/video/<key>/<edge>.mp4`, served `immutable`. Orientation-correct (portrait +
+  landscape both fit the box).
+- **Serve:** a video URL returns the **default ~720p** rendition; `?q=480|720|1080` picks one (nearest
+  available); `?dl=1` / `?orig=1` returns the original. The original is never modified.
+- **Transcoding is a background queue OFF the request thread** — each rendition is its own ffmpeg child
+  process. Concurrency scales with CPUs but always reserves a core for the web server:
+  `CONCURRENCY = max(1, cpus-1)` (hard-capped at 4, `TRANSCODE_CONCURRENCY` env override), each ffmpeg
+  pinned to `-threads 1`. Graceful no-op if `ffmpeg-static` is unavailable (serves originals; never
+  crashes). Local test: 1080p → 854/1280 renditions at a fraction of the source size.
+  - **CPU count via cgroup, not `os.cpus()`.** In Render's container `os.cpus().length` is the *host's*
+    32 cores, not the 2 allocated — using it spawned ~20 ffmpeg and thrashed the box. `effectiveCpus()`
+    reads the cgroup v2/v1 CPU quota (`cpu.max` / `cpu.cfs_quota_us`) → 2 on `pro` → concurrency 1.
+- **Backfill existing videos:** `POST /admin/transcode-backfill` (Bearer INGEST_TOKEN) enqueues every
+  video lacking a web version (re-runnable, skips done); `GET /admin/transcode-status` reports
+  `{available, concurrency, running, pending, done, failed, planned}`.
 
 ## Purge a session (cleanup / reclaim disk)
 

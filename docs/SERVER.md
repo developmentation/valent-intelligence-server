@@ -53,7 +53,9 @@ The single source of truth for what the server *is today*. (Forward-looking desi
 | `GET /api/audio?session=` | JWT | ordered `.aac` clips for the streaming player |
 | `GET /api/manifest?session=` | JWT | per-session streams manifest (visualizer entry point) |
 | `GET /api/gallery?session=` | JWT | media items with URLs |
-| `GET /media/*` | JWT | serve a stored file; `?w=<allowed>` → cached downscaled JPEG (see MEDIA-PIPELINE.md) |
+| `GET /media/*` | JWT | image `?w=` → cached JPEG; video → cached web MP4 (`?q=480/720/1080`); `?dl=1` → original (see MEDIA-PIPELINE.md) |
+| `POST /admin/transcode-backfill` | INGEST_TOKEN | enqueue web renditions for all existing videos (re-runnable) |
+| `GET /admin/transcode-status` | INGEST_TOKEN | transcode queue status (available/running/pending/done/failed) |
 | `POST /admin/purge-session` | INGEST_TOKEN | delete a session's files+derived+records+row (exact id; destructive) |
 | `GET /curate` | JWT | publication builder UI (see PUBLICATIONS.md) |
 | `GET · POST /admin/publications` | JWT | list / create publications |
