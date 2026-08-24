@@ -104,11 +104,17 @@ small **web-optimized MP4** by default; the ORIGINAL is untouched and downloadab
 - **Serve:** a video URL returns the **default ~720p** rendition; `?q=480|720|1080` picks one (nearest
   available); `?dl=1` / `?orig=1` returns the original. The original is never modified.
 - **Poster frames:** ffmpeg also extracts one representative frame (`~1s` in, first-frame fallback) as
-  `poster.jpg` per video. Served via `<video-url>?poster=1` (resizable with `?w=`, cached). Every surface's
-  video tiles use it as an `<img>` (with a play-badge overlay) and the players set it as their `poster=`,
-  so video thumbnails render reliably instead of a blank box (a browser `<video>` poster was unreliable).
-  404 until ready → the `<img>` falls back to the play-badge box. Backfill generates posters for videos
-  that already have renditions too.
+  `poster.jpg` per video. Served via `<video-url>?poster=1` (resizable with `?w=`, cached). **Every**
+  server surface's video tiles use it as an `<img>` (play-badge overlay) and the players set it as their
+  `poster=` — publish, curate, dashboard, and `/live` — so video thumbnails render reliably instead of a
+  blank box (a browser `<video>` poster was unreliable). Tiles **self-heal**: a just-synced video is still
+  transcoding, so its poster 404s at first — the `<img>` retries a few times (3 s backoff) before falling
+  back to the play badge.
+- **Auto-generated on EVERY ingest path** (not just backfill): the poster + rendition ladder is enqueued
+  when a video arrives via the live lane (`/ingest/live/photo`), the chunked lane
+  (`/ingest/upload/complete`), **and** the bulk lane (`/ingest` → `handleIngest` returns `mediaKeys`, the
+  route enqueues videos). First view (`?poster=1` / the player) also enqueues as a backstop, and
+  `/admin/transcode-backfill` covers anything pre-existing.
 - **Transcoding is a background queue OFF the request thread** — each rendition is its own ffmpeg child
   process. Concurrency scales with CPUs but always reserves a core for the web server:
   `CONCURRENCY = max(1, cpus-1)` (hard-capped at 4, `TRANSCODE_CONCURRENCY` env override), each ffmpeg
