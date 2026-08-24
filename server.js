@@ -10,6 +10,7 @@ const storage = require('./storage');
 const geotrack = require('./geotrack');
 const imagepipe = require('./imagepipe');
 const videopipe = require('./videopipe');
+const uploadpipe = require('./uploadpipe');
 
 // Serve a media key: a video's cached web-optimized MP4 when ready (else the original + a background
 // transcode), or an image (resized via ?w=, or original). `?dl=1` / `?orig=1` always force the original.
@@ -145,6 +146,45 @@ app.post('/ingest/live/photo', async (req, res) => {
     if (videopipe.isVideo(fname)) videopipe.enqueue(storage, key);   // proactively make the web version
     sseBroadcast({ type: 'photo', session: sid, url, filename: fname, at: Date.now() });
     res.json({ ok: true, url, bytes });
+  } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+});
+
+// ---- resumable, checksum-validated chunked upload (for longform / multi-GB media past the CDN edge) ----
+// init → declares {session, filename, stream, size, sha256, chunkSize}; returns which chunks already landed.
+// chunk → PUT one chunk's raw bytes with its x-chunk-sha256 (verified on arrival). complete → reassembles,
+// verifies the WHOLE-FILE sha256, and only then commits the file + kicks off transcoding. status → resume.
+// Mounted ABOVE the global JSON parser; the chunk body streams to disk (no parser). See MEDIA-PIPELINE.md.
+const uploadAuth = (req) => (req.header('authorization') || '') === 'Bearer ' + INGEST_TOKEN;
+app.post('/ingest/upload/init', express.json({ limit: '16kb' }), (req, res) => {
+  if (!uploadAuth(req)) return res.status(401).end();
+  try { res.json(uploadpipe.init(storage, req.body || {})); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.put('/ingest/upload/chunk', async (req, res) => {
+  if (!uploadAuth(req)) return res.status(401).end();
+  const r = await uploadpipe.saveChunk(storage, req.header('x-upload-id'), req.header('x-chunk-index'), req.header('x-chunk-sha256'), req);
+  res.status(r.status).json(r);
+});
+app.get('/ingest/upload/status', (req, res) => {
+  if (!uploadAuth(req)) return res.status(401).end();
+  const s = uploadpipe.status(storage, String(req.query.id || ''));
+  if (!s) return res.status(404).json({ error: 'no such upload' });
+  res.json(s);
+});
+app.post('/ingest/upload/complete', express.json({ limit: '16kb' }), async (req, res) => {
+  if (!uploadAuth(req)) return res.status(401).end();
+  const r = await uploadpipe.complete(storage, String((req.body || {}).uploadId || ''));
+  if (r.status !== 200) return res.status(r.status).json(r);
+  try {
+    await pool.query(
+      `insert into files (session_id, stream, filename, path, sha256, bytes, kind)
+       values ($1,$2,$3,$4,$5,$6,'media') on conflict (sha256) do nothing`,
+      [r.session, r.stream, r.filename, r.key, r.sha256, r.bytes]);
+    if (videopipe.isVideo(r.filename)) videopipe.enqueue(storage, r.key);
+    try { fs.rmSync(r.dir, { recursive: true, force: true }); } catch (_) {}
+    const url = storage.publicUrl(r.key);
+    sseBroadcast({ type: 'photo', session: r.session, url, filename: r.filename, at: Date.now() });
+    res.json({ ok: true, url, bytes: r.bytes, sha256: r.sha256 });
   } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
 });
 
