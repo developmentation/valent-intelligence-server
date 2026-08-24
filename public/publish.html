@@ -213,6 +213,12 @@ function havM(a,b){const R=6371000,r=Math.PI/180,dLat=(b[0]-a[0])*r,dLon=(b[1]-a
 function fmtDur(s){s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h>0?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`;}
 // subject-local time from server-received ms + the leg's tz offset (minutes)
 function localTime(ms, tz){ if(ms==null) return ''; const d=new Date(Number(ms)+(tz||0)*60000); return d.toISOString().substr(11,5); }
+// Load a video poster with retries — a just-synced video may still be transcoding, so the poster 404s at
+// first and then appears; retry a few times before falling back to the play-badge box.
+function posterLoad(im, url, onOk){ if(!im) return; let t=0;
+  im.onload=()=>{ onOk&&onOk(); };
+  im.onerror=()=>{ if(t++<5){ setTimeout(()=>{ im.src=url+(url.includes('?')?'&':'?')+'r='+t+'_'+Date.now(); }, 3000); } else { onOk&&onOk(); im.remove(); } };
+  im.src=url; }
 function localDay(ms, tz){ if(ms==null) return ''; const d=new Date(Number(ms)+(tz||0)*60000); return d.toISOString().substr(0,10); }
 
 async function load(){
@@ -285,8 +291,8 @@ function renderGrid(){
     const d=document.createElement('div'); d.className='cell loading';
     const dot=`<span class="lg" style="background:${legColor[m.session_id]||'#ff5a3c'}"></span>`;
     const tm=`<div class="tm">${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))}</div>`;
-    if(m.type==='video'){ d.innerHTML=`<img src="${m.url}?poster=1&w=500"><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}${tm}`;
-      const im=d.querySelector('img'); im.onload=()=>d.classList.remove('loading'); im.onerror=()=>{ d.classList.remove('loading'); im.remove(); }; }
+    if(m.type==='video'){ d.innerHTML=`<img><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}${tm}`;
+      const im=d.querySelector('img'); posterLoad(im, `${m.url}?poster=1&w=500`, ()=>d.classList.remove('loading')); }
     else { const im=new Image(); im.onload=()=>{d.classList.remove('loading');im.classList.add('rdy');}; im.src=m.url+'?w=500'; d.appendChild(im); d.insertAdjacentHTML('beforeend',dot+tm); }
     d.onclick=()=>openLb(i);
     g.appendChild(d);
@@ -427,7 +433,7 @@ function swRenderStrip(){
   shown.forEach((it,i)=>{
     const d=document.createElement('div'); d.className='thumb'+(i===sw.idx?' cur':'');
     const dot=`<span class="lg" style="background:${legColor[it.session_id]||'#ff5a3c'}"></span>`;
-    if(it.type==='video'){ d.classList.add('vid'); d.innerHTML=`<img src="${it.url}?poster=1&w=200"><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`; const im=d.querySelector('img'); im.onerror=()=>im.remove(); }
+    if(it.type==='video'){ d.classList.add('vid'); d.innerHTML=`<img><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`; posterLoad(d.querySelector('img'), `${it.url}?poster=1&w=200`); }
     else { d.classList.add('loading'); const im=new Image(); im.onload=()=>{d.classList.remove('loading');im.classList.add('rdy');}; im.onerror=()=>d.classList.remove('loading'); im.src=it.url+'?w=140'; d.appendChild(im); d.insertAdjacentHTML('beforeend',dot); }
     d.onclick=()=>{ swPause(); swShow(i); };
     f.appendChild(d);
