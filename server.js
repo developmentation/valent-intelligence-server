@@ -77,6 +77,9 @@ app.post('/ingest', express.raw({ type: () => true, limit: '64mb' }), async (req
     const h = {};
     for (const k of Object.keys(req.headers)) h[k.toLowerCase()] = req.headers[k];
     const out = await handleIngest(h, req.body);
+    // Any media video that arrived via the bulk lane also gets a transcode + poster (completeness — the
+    // client normally routes media via the live/chunked lanes, but this keeps every path fully wired).
+    for (const k of (out.mediaKeys || [])) if (videopipe.isVideo(k)) videopipe.enqueue(storage, k);
     // Live nudge to any connected visualizer: which session grew, by how much.
     if (out.status >= 200 && out.status < 300 && out.body && out.body.session) {
       sseBroadcast({ type: 'ingest', session: out.body.session, storedNew: out.body.storedNew, records: out.body.records, members: out.body.members, at: Date.now() });

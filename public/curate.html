@@ -124,6 +124,8 @@
 <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const $=s=>document.querySelector(s);
+// Video posters may still be transcoding on first view — retry a few times before giving up.
+function posterErr(img){ const n=+(img.dataset.n||0); if(n<5){ img.dataset.n=n+1; setTimeout(()=>{ img.src=img.dataset.p+'&r='+(n+1)+'_'+Date.now(); }, 3000); } else { img.remove(); } }
 const LEG_COLORS=['#ff5a3c','#3ce38f','#5b9dff','#ffb454','#c07cff','#38e1c0','#ff7ab6','#9fd356'];
 let sessions=[], selected=[], excluded=new Set(), editingId=null, map, trackLayer, galItems=[];
 
@@ -193,7 +195,7 @@ async function loadGallery(){
   galItems.forEach(it=>{
     const d=document.createElement('div'); d.className='g'+(excluded.has(it.path)?' ex':''); d.dataset.path=it.path; d.title=it.filename;
     const dot=`<span class="lg" style="background:${colorFor(it.session_id)}"></span>`;
-    if(it.type==='video') d.innerHTML=`<video src="${it.url}#t=0.1" muted preload="metadata"></video><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`;
+    if(it.type==='video') d.innerHTML=`<img data-p="${it.url}?poster=1&w=400" src="${it.url}?poster=1&w=400" onerror="posterErr(this)" alt=""><div class="pv"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>${dot}`;
     else d.innerHTML=`<img src="${it.url}?w=400" loading="lazy" alt="">${dot}`;
     d.onclick=()=>{ if(excluded.has(it.path)) excluded.delete(it.path); else excluded.add(it.path); d.classList.toggle('ex'); $('#galCount').textContent=`(${galItems.length} items, ${excluded.size} excluded)`; };
     g.appendChild(d);

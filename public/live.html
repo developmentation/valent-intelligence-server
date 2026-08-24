@@ -586,7 +586,9 @@ function renderStrip(){
       // Video tile: a small ffmpeg-EXTRACTED poster frame (~20KB JPEG, not the whole clip — the old
       // concern was fetching full clips which starved the stage video download) + a play badge.
       d.classList.add('vid');
-      const pim=new Image(); pim.decoding='async'; pim.src=it.url+'?poster=1&w=200'; pim.onerror=()=>pim.remove(); d.appendChild(pim);
+      const pim=new Image(); pim.decoding='async'; const purl=it.url+'?poster=1&w=200'; let pt=0;
+      pim.onerror=()=>{ if(pt++<5){ setTimeout(()=>{ pim.src=purl+'&r='+pt+'_'+Date.now(); }, 3000); } else pim.remove(); };
+      pim.src=purl; d.appendChild(pim);
       const pv=document.createElement('div'); pv.className='pv'; pv.innerHTML=svg('<path d="M8 5v14l11-7z"/>');
       pv.querySelector('svg').setAttribute('fill','#fff'); pv.querySelector('svg').removeAttribute('stroke');
       d.appendChild(pv);

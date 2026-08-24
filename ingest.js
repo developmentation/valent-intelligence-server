@@ -144,7 +144,7 @@ async function storeMember(m) {
   }
   // Keep the per-stream catalog current (visualizer manifest source).
   await upsertStream(sessionId, stream, kind, m.len, recCount, minWall, maxWall);
-  return { stored: true, kind, records: recCount };
+  return { stored: true, kind, records: recCount, key };
 }
 
 /** Roll one stored file into the session×stream catalog: extend the time span, bump counts + bytes. */
@@ -292,10 +292,12 @@ async function handleIngest(headers, rawBody) {
     }
   }
   let stored = 0, recs = 0;
+  const mediaKeys = [];   // newly-stored media (photo/video) keys — the route enqueues videos for transcode
   for (const m of members) {
     const r = await storeMember(m);
     if (r.stored) stored++;
     if (r.records) recs += r.records;
+    if (r.stored && r.kind === 'media' && r.key) mediaKeys.push(r.key);
   }
   await pool.query(
     `insert into batches (session_id, idx, sha256, device, bytes, members)
@@ -317,7 +319,7 @@ async function handleIngest(headers, rawBody) {
                                   coalesce((select sum(record_count) from streams st where st.session_id=s.id),0))
        where s.id=$1`, [sessionId0]);
   }
-  return { status: 200, body: { ok: true, session: sessionId0, members: members.length, storedNew: stored, records: recs } };
+  return { status: 200, mediaKeys, body: { ok: true, session: sessionId0, members: members.length, storedNew: stored, records: recs } };
 }
 
 module.exports = { handleIngest, MEDIA_ROOT };

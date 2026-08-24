@@ -254,12 +254,14 @@ async function loadGallery(){
   g.innerHTML = items.map((it,i)=>{
     const fresh = knownGallery.size && !knownGallery.has(it.url) ? ' fresh' : '';
     const inner = it.type==='video'
-      ? `<img loading="lazy" src="${it.url}?poster=1&w=400"><span class="pv">▶</span>`
+      ? `<img loading="lazy" data-p="${it.url}?poster=1&w=400" src="${it.url}?poster=1&w=400" onerror="posterErr(this)"><span class="pv">▶</span>`
       : `<img loading="lazy" src="${it.url}?w=400">`;
     return `<figure class="fig${fresh}" onclick="openLb(${i})">${inner}</figure>`;
   }).join('');
   knownGallery = new Set(items.map(it=>it.url));
 }
+// Video posters may still be transcoding on first view — retry a few times before giving up.
+function posterErr(img){ const n=+(img.dataset.n||0); if(n<5){ img.dataset.n=n+1; setTimeout(()=>{ img.src=img.dataset.p+'&r='+(n+1)+'_'+Date.now(); }, 3000); } else { img.remove(); } }
 function openLb(i){ lbIdx=i; renderLb(); $('#lightbox').classList.add('open'); }
 function closeLb(){ $('#lightbox').classList.remove('open'); $('#lbcontent').innerHTML=''; }
 function navLb(d){ if(!galleryItems.length) return; lbIdx=(lbIdx+d+galleryItems.length)%galleryItems.length; renderLb(); }
