@@ -20,7 +20,29 @@ const isVideo = (rel) => VIDEO_RE.test(rel);
 const LADDER = [854, 1280, 1920];          // long-edge caps: ~480p / ~720p / ~1080p
 const DEFAULT_EDGE = 1280;                 // served when no ?q — a good web default (~720p)
 const Q_TO_EDGE = { '480': 854, '720': 1280, '1080': 1920 };
-const CONCURRENCY = Math.max(1, (os.cpus() ? os.cpus().length : 1) - 1);
+
+// os.cpus() reports the HOST's core count in a container (32 on Render's nodes), NOT the cgroup CPU
+// allocation — using it would spawn dozens of ffmpeg on a 2-CPU box and OOM/thrash. Read the real quota
+// from the cgroup (v2 then v1); fall back conservatively; hard-cap so a bad read can never oversubscribe.
+function effectiveCpus() {
+  try {
+    const v2 = fs.readFileSync('/sys/fs/cgroup/cpu.max', 'utf8').trim().split(/\s+/);
+    if (v2[0] && v2[0] !== 'max') {
+      const q = parseInt(v2[0], 10), p = parseInt(v2[1] || '100000', 10);
+      if (q > 0 && p > 0) return Math.max(1, Math.round(q / p));
+    }
+  } catch (_) { /* not cgroup v2 */ }
+  try {
+    const q = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'utf8'), 10);
+    const p = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'utf8'), 10);
+    if (q > 0 && p > 0) return Math.max(1, Math.round(q / p));
+  } catch (_) { /* not cgroup v1 with a quota */ }
+  return 2;   // unknown → assume a small instance
+}
+const ENV_C = parseInt(process.env.TRANSCODE_CONCURRENCY, 10);
+const CPUS = effectiveCpus();
+// reserve a core for the web server; hard-cap at 4 so a misdetect can't spawn a swarm of ffmpeg.
+const CONCURRENCY = ENV_C > 0 ? ENV_C : Math.min(4, Math.max(1, CPUS - 1));
 
 function dirAbs(root, key) {
   const safe = String(key).split('/').join(path.sep);
@@ -149,5 +171,5 @@ function backfill(storage, rows) {
 module.exports = {
   isVideo, enqueue, webIfReady, backfill,
   available: () => !!FFMPEG,
-  status: () => ({ available: !!FFMPEG, concurrency: CONCURRENCY, running, pending: queue.length, ...stat }),
+  status: () => ({ available: !!FFMPEG, cpus: CPUS, concurrency: CONCURRENCY, running, pending: queue.length, ...stat }),
 };
