@@ -30,6 +30,9 @@ function derivedAbs(root, key, w) {
  * otherwise the original bytes. `storage` is the disk driver (needs localPath/serve/root).
  */
 async function sendImage(req, res, storage, rel, downloadName) {
+  // ?dl=1 → always the ORIGINAL bytes as a download (Content-Disposition: attachment). Works for images
+  // AND videos, so a viewer sees the fast compressed version on the page but can pull the full-res source.
+  if (req.query && req.query.dl) return storage.serve(res, rel, path.basename(rel));
   const w = parseInt(req.query && req.query.w, 10);
   const wantResize = sharp && w && WIDTHS.has(w) && IMG_RE.test(rel) && typeof storage.localPath === 'function';
   if (!wantResize) return storage.serve(res, rel, downloadName);

@@ -9,6 +9,20 @@ const { handleIngest, MEDIA_ROOT } = require('./ingest');
 const storage = require('./storage');
 const geotrack = require('./geotrack');
 const imagepipe = require('./imagepipe');
+const videopipe = require('./videopipe');
+
+// Serve a media key: a video's cached web-optimized MP4 when ready (else the original + a background
+// transcode), or an image (resized via ?w=, or original). `?dl=1` / `?orig=1` always force the original.
+function serveMedia(req, res, rel) {
+  if (!req.query.dl && !req.query.orig) {
+    const web = videopipe.webIfReady(storage, rel);
+    if (web) {
+      res.set('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.sendFile(web, (e) => { if (e) imagepipe.sendImage(req, res, storage, rel).catch(() => { try { storage.serve(res, rel); } catch (_) { res.status(400).end(); } }); });
+    }
+  }
+  return imagepipe.sendImage(req, res, storage, rel).catch(() => { try { storage.serve(res, rel); } catch (_) { res.status(400).end(); } });
+}
 
 const app = express();
 app.set('trust proxy', 1);
@@ -128,6 +142,7 @@ app.post('/ingest/live/photo', async (req, res) => {
        values ($1,$2,$3,$4,$5,$6,'media') on conflict (sha256) do nothing`,
       [sid, stream, fname, key, sha256, bytes]);
     const url = storage.publicUrl(key);
+    if (videopipe.isVideo(fname)) videopipe.enqueue(storage, key);   // proactively make the web version
     sseBroadcast({ type: 'photo', session: sid, url, filename: fname, at: Date.now() });
     res.json({ ok: true, url, bytes });
   } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
@@ -728,8 +743,8 @@ app.get('/pub/:id/media/*', async (req, res) => {
   const ok = (await pool.query(
     `select 1 from files where kind='media' and session_id = any($1) and path=$2 limit 1`, [sids, rel])).rows[0];
   if (!ok) return res.status(404).end();
-  // ?w=<allowed> → downscaled/recompressed JPEG (cached) for fast public galleries; else original bytes.
-  imagepipe.sendImage(req, res, storage, rel).catch(() => { try { storage.serve(res, rel); } catch (_) { res.status(400).end(); } });
+  // video → cached web MP4; image → ?w= thumbnail; ?dl=1 → original. Fast public galleries.
+  serveMedia(req, res, rel);
 });
 app.get('/publish/:id', async (req, res) => {
   const pub = await loadPublished(req.params.id);
@@ -922,8 +937,25 @@ app.get('/api/manifest', requireAdmin, async (req, res) => {
 app.get('/media/*', requireAdmin, (req, res) => {
   const rel = decodeURIComponent(req.params[0] || '');
   if (rel.includes('..')) return res.status(400).end();
-  // ?w=<allowed> → downscaled/recompressed JPEG (cached); otherwise original bytes.
-  imagepipe.sendImage(req, res, storage, rel).catch(() => { try { storage.serve(res, rel); } catch (_) { res.status(400).end(); } });
+  // video → cached web MP4; image → ?w= thumbnail; ?dl=1 → original. (see MEDIA-PIPELINE.md)
+  serveMedia(req, res, rel);
+});
+
+// ---- video transcode: backfill web-optimized versions of existing videos, and check progress.
+// Token-gated. The worker is an in-process concurrency-1 background queue (gentle on the small instance);
+// this just enqueues, then returns. Re-runnable — it skips videos that already have a web version. ----
+app.post('/admin/transcode-backfill', async (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  if (!videopipe.available()) return res.json({ ok: false, error: 'ffmpeg unavailable' });
+  try {
+    const rows = (await pool.query("select path from files where kind='media'")).rows;
+    const r = videopipe.backfill(storage, rows);
+    res.json({ ok: true, ...r, status: videopipe.status() });
+  } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+});
+app.get('/admin/transcode-status', (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  res.json(videopipe.status());
 });
 
 // ---- purge a session: delete its files (disk + derived thumbnails), records, and the session row.
@@ -942,6 +974,7 @@ app.post('/admin/purge-session', express.json({ limit: '16kb' }), async (req, re
       const dir = path.resolve(storage.root, '_derived', 'w' + w, sid);
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     }
+    try { fs.rmSync(path.resolve(storage.root, '_derived', 'video', sid), { recursive: true, force: true }); } catch (_) { /* ignore */ }
     const recs = (await pool.query('delete from records where session_id=$1', [sid])).rowCount;
     const dbf = (await pool.query('delete from files where session_id=$1', [sid])).rowCount;
     const sess = (await pool.query('delete from sessions where id=$1', [sid])).rowCount;

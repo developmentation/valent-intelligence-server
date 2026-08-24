@@ -57,7 +57,9 @@
   #lb{position:fixed;inset:0;z-index:50;display:none;background:rgba(4,6,9,.94);place-items:center;padding:20px}
   #lb.open{display:grid}
   #lb .media{max-width:100%;max-height:82vh;border-radius:10px}
-  #lb .cap{position:fixed;left:0;right:0;bottom:16px;text-align:center;color:var(--mut);font-family:var(--mono);font-size:12px}
+  #lb .cap{position:fixed;left:0;right:0;bottom:16px;display:flex;gap:14px;align-items:center;justify-content:center;color:var(--mut);font-family:var(--mono);font-size:12px}
+  #lb .cap .dlorig{color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:9px;padding:4px 11px;background:var(--glass);transition:border-color .15s,color .15s}
+  #lb .cap .dlorig:hover{border-color:var(--accent)}
   #lb .x{position:fixed;top:14px;right:16px;width:42px;height:42px;border-radius:12px;border:1px solid var(--line);background:rgba(16,19,26,.7);color:#fff;font-size:22px;cursor:pointer}
   #lb .nav{position:fixed;top:50%;transform:translateY(-50%);width:46px;height:64px;border:1px solid var(--line);background:rgba(16,19,26,.6);color:#fff;font-size:24px;cursor:pointer;border-radius:12px}
   #lbPrev{left:12px}#lbNext{right:12px}
@@ -162,6 +164,7 @@
     <div class="tools">
       <button class="tbtn" id="swTheme" title="Light / dark"></button>
       <button class="tbtn" id="swFull" title="Fullscreen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      <a class="tbtn" id="swDl" download title="Download original" style="display:grid;place-items:center;text-decoration:none"><svg viewBox="0 0 24 24"><path d="M12 3v11m0 0l-4-4m4 4l4-4M5 20h14"/></svg></a>
       <button class="tbtn" id="swClose" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
   </div>
@@ -293,7 +296,8 @@ function openLb(i){ lbIdx=i; const m=shown[i]; if(!m) return;
   $('#lbBody').innerHTML = m.type==='video'
     ? `<video class="media" src="${m.url}" controls autoplay playsinline></video>`
     : `<img class="media" src="${m.url}?w=1600">`;
-  $('#lbCap').textContent=`${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))} · ${i+1} / ${shown.length}`;
+  const cap=`${localTime(m.received_at?Date.parse(m.received_at):null, tzOf(m.session_id))} · ${i+1} / ${shown.length}`;
+  $('#lbCap').innerHTML=`<span>${cap}</span><a class="dlorig" href="${m.url}?dl=1" download title="Download the full-resolution original">↓ original${m.bytes?` · ${(m.bytes/1048576).toFixed(1)} MB`:''}</a>`;
   $('#lb').classList.add('open');
 }
 function stepLb(d){ if(shown.length) openLb((lbIdx+d+shown.length)%shown.length); }
@@ -360,6 +364,7 @@ function swStageLoading(on){ $('#swLoad').classList.toggle('show',!!on); }
 function swShow(idx,{fade=true}={}){
   const it=shown[idx]; if(!it) return;
   const gen=++sw.gen; sw.idx=idx; swMarkStrip();
+  { const dl=$('#swDl'); if(dl){ dl.href=it.url+'?dl=1'; dl.title=it.type==='video'?'Download original video':'Download original image'; } }
   const t=it.received_at?Date.parse(it.received_at):null;
   const loc=t!=null?swLocForTime(t):null;
   const sid=it.session_id;
