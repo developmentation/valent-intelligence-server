@@ -15,7 +15,7 @@ const videopipe = require('./videopipe');
 // transcode), or an image (resized via ?w=, or original). `?dl=1` / `?orig=1` always force the original.
 function serveMedia(req, res, rel) {
   if (!req.query.dl && !req.query.orig) {
-    const web = videopipe.webIfReady(storage, rel);
+    const web = videopipe.webIfReady(storage, rel, req.query.q);
     if (web) {
       res.set('Cache-Control', 'public, max-age=31536000, immutable');
       return res.sendFile(web, (e) => { if (e) imagepipe.sendImage(req, res, storage, rel).catch(() => { try { storage.serve(res, rel); } catch (_) { res.status(400).end(); } }); });
@@ -1129,5 +1129,13 @@ ${qr ? `<img class="qr" src="${qr}" alt="Sync QR">` : '<p>(QR unavailable)</p>'}
 (async () => {
   try { await init(); console.log('db ready'); } catch (e) { console.error('db init failed', e); }
   const port = process.env.PORT || 10000;
-  app.listen(port, () => console.log('valent-intelligence-server on :' + port));
+  const server = app.listen(port, () => console.log('valent-intelligence-server on :' + port));
+  // Allow very large media uploads (multi-GB videos stream to disk). A slow phone link can take a long
+  // time to push a big file, so disable the per-request timeout and give headers/idle generous windows.
+  // Media routes have no body-size cap (they stream); the practical ceiling is the CDN/edge, not the app.
+  server.requestTimeout = 0;               // no limit on how long receiving a full request may take
+  server.headersTimeout = 120000;          // 2 min to send headers
+  server.keepAliveTimeout = 120000;
+  server.timeout = 0;                       // no socket inactivity timeout during a long streamed upload
+  server.maxRequestsPerSocket = 0;
 })();

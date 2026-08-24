@@ -443,7 +443,7 @@ function showItem(idx,{fade=true}={}){
     // Flaky wifi/cell: retry a few times with a cache-busting param before giving up (keeps the strip
     // box, doesn't wedge the stage black).
     im.onerror=()=>{ if(tries++<3){ setTimeout(()=>{ const u=it.url+(it.url.includes('?')?'&':'?')+'r='+tries+'_'+Date.now(); bg.src=u; im.src=u; }, 2500); } else { done(); } };
-    bg.src=it.url; im.src=it.url;
+    bg.src=it.url+'?w=900'; im.src=it.url+'?w=1600';
     back.append(bg,im);
   }
 }
@@ -572,10 +572,11 @@ function renderScene(list){
 // item immediately and fade each image in when it loads; retry a few times before giving up. The boxes
 // are always present (anticipating the load), never a blank strip.
 function thumbImg(d, url){
+  const turl=url+(url.includes('?')?'&':'?')+'w=320';   // small compressed tile
   const img=new Image(); img.alt=''; let tries=0;
   img.onload=()=>{ d.classList.remove('loading'); img.classList.add('rdy'); };
-  img.onerror=()=>{ if(tries++<4) setTimeout(()=>{ img.src=url+(url.includes('?')?'&':'?')+'r='+tries+'_'+Date.now(); }, 3000); };
-  img.src=url; d.appendChild(img);
+  img.onerror=()=>{ if(tries++<4) setTimeout(()=>{ img.src=turl+'&r='+tries+'_'+Date.now(); }, 3000); };
+  img.src=turl; d.appendChild(img);
 }
 function renderStrip(){
   const f=$('#films'); f.innerHTML='';
