@@ -614,6 +614,18 @@ app.get('/api/scene', requireAdmin, async (req, res) => {
   res.json(out.reverse());   // oldest → newest
 });
 
+// Raw record history for one stream of a session (oldest→newest) — used by the ASR-scenario builder to
+// select background audio by real metadata (motion_activity / audio_scene / gnss / location). Admin-only.
+app.get('/api/records', requireAdmin, async (req, res) => {
+  const s = String(req.query.session || ''); const stream = String(req.query.stream || '');
+  if (!s || !stream) return res.status(400).json({ error: 'session + stream required' });
+  const limit = Math.min(50000, Math.max(1, parseInt(req.query.limit, 10) || 20000));
+  const q = await pool.query(
+    'select wall, data from records where session_id=$1 and stream=$2 order by wall asc limit $3',
+    [s, stream, limit]);
+  res.json(q.rows.map((r) => ({ wall: Number(r.wall), data: r.data })));
+});
+
 // Full cumulative transcript for a session (the running narrative), oldest→newest, plus the joined text.
 app.get('/api/transcript', requireAdmin, async (req, res) => {
   const s = req.query.session; const args = [];
