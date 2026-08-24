@@ -103,6 +103,12 @@ small **web-optimized MP4** by default; the ORIGINAL is untouched and downloadab
   landscape both fit the box).
 - **Serve:** a video URL returns the **default ~720p** rendition; `?q=480|720|1080` picks one (nearest
   available); `?dl=1` / `?orig=1` returns the original. The original is never modified.
+- **Poster frames:** ffmpeg also extracts one representative frame (`~1s` in, first-frame fallback) as
+  `poster.jpg` per video. Served via `<video-url>?poster=1` (resizable with `?w=`, cached). Every surface's
+  video tiles use it as an `<img>` (with a play-badge overlay) and the players set it as their `poster=`,
+  so video thumbnails render reliably instead of a blank box (a browser `<video>` poster was unreliable).
+  404 until ready → the `<img>` falls back to the play-badge box. Backfill generates posters for videos
+  that already have renditions too.
 - **Transcoding is a background queue OFF the request thread** — each rendition is its own ffmpeg child
   process. Concurrency scales with CPUs but always reserves a core for the web server:
   `CONCURRENCY = max(1, cpus-1)` (hard-capped at 4, `TRANSCODE_CONCURRENCY` env override), each ffmpeg
