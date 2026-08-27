@@ -1062,6 +1062,18 @@ app.get('/download/apk/:name', (req, res) => {
   res.download(p, name);
 });
 // I publish new builds here with the ingest token (kept off the public surface).
+// Upload a generated per-session timeline.json from the GPU pipeline (headless → Bearer INGEST_TOKEN).
+// Streamed straight to _derived/<sid>/timeline.json (a few MB); read back via the admin-gated /media/ route by
+// public/timeline.html. POST with Content-Type: application/octet-stream + --data-binary so no body parser eats it.
+app.post('/admin/timeline/:session', (req, res) => {
+  if (!INGEST_TOKEN || (req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const sid = String(req.params.session).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const key = '_derived/' + sid + '/timeline.json';
+  storage.putStream(key, req)
+    .then(r => res.json({ ok: true, key, bytes: r.bytes }))
+    .catch(e => res.status(500).json({ ok: false, error: String(e && e.message || e) }));
+});
+
 app.post('/admin/apk', (req, res) => {
   const auth = req.header('authorization') || '';
   if (!INGEST_TOKEN || auth !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
@@ -1126,6 +1138,10 @@ app.get('/', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'pub
 app.get('/live', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'live.html')));
 // ---- /curate: build/manage publications (password-gated). Published views live at /publish/:id (open). ----
 app.get('/curate', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'curate.html')));
+// ---- /timeline/:session: server-hosted, HLS-streaming acoustic timeline for a processed session. ----
+// Reads _derived/<sid>/timeline.json (lanes+words+peaks, uploaded by the GPU pipeline) and streams audio via
+// /api/audio/hls?session=  — so it plays across a whole multi-hour session with no embedded-audio size cap.
+app.get('/timeline/:session', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'timeline.html')));
 
 // ---- pages ----
 function loginPage(err, next) {
