@@ -120,7 +120,7 @@ function draw(){
  // tag lanes (windowed)
  let ti=Math.max(0,lb(tags,'t',t0)-1);
  for(let k=ti;k<tags.length;k++){const g=tags[k];if(g.t>t1+1)break;const x=X(g.t-0.25),w=Math.max(1,X(g.t+0.25)-X(g.t-0.25));if(x+w<0||x>W)continue;
-   const sp=g.sp,a=sp?1:0.22;
+   const sp=g.sp,a=sp?1:0.5;   // non-speech (road noise etc.) still shows its acoustic tags, just a touch dimmer
    if(g.coh!=null){ctx.globalAlpha=a;ctx.fillStyle=nfCol(g.coh);ctx.fillRect(x,nfY,w,nfH);}
    if(g.srmr!=null){ctx.globalAlpha=a;ctx.fillStyle=rvCol(g.srmr);ctx.fillRect(x,rvY,w,rvH);}
    if(g.c50!=null){ctx.globalAlpha=a;ctx.fillStyle=c50Col(g.c50);ctx.fillRect(x,c5Y,w,c5H);}
