@@ -97,7 +97,8 @@ function nfCol(c){return fbColT((c-0.15)/0.6);}
 function rvCol(s){return fbColT((s-1.5)/8);}
 function c50Col(c){return fbColT((c-10)/25);}
 function confCol(c){if(c==null)return'#3a4150';let t=Math.max(0,Math.min(1,(c-0.55)/0.45)),h=2+t*126;return`hsl(${h.toFixed(0)},68%,${(52+t*6).toFixed(0)}%)`;}
-const SRCCOL={mix:'#4f8cff',norm:'#9ecbff',L:'#2dd4bf',R:'#5eead4',se_mix:'#35c46a',se_norm:'#7be0a0',peel:'#e0864a',qwen:'#a97bff',orig:'#4f8cff'};
+const SRCCOL={mix:'#4f8cff',norm:'#9ecbff',dr:'#f0a04a',L:'#2dd4bf',R:'#5eead4',se_mix:'#35c46a',se_norm:'#7be0a0',
+  w_mix:'#c77dff',w_norm:'#c77dff',w_dr:'#d8a0ff',w_se_mix:'#b565e0',peel:'#e0864a',qwen:'#a97bff',orig:'#4f8cff'};
 
 async function boot(){
   try{
@@ -217,7 +218,7 @@ function draw(){
    $('elreadout').innerHTML=eh; if(elOpen) $('elbody').innerHTML=eh;
  }
  const sd=$('segdec');
- if(curSeg){const wl={mix:'Parakeet·mix',norm:'Parakeet·norm',L:'Parakeet·L',R:'Parakeet·R',se_mix:'StuPASE',se_norm:'Norm→StuPASE',peel:'peel',qwen:'Qwen'}[curSeg.winner]||curSeg.winner||'—';
+ if(curSeg){const wl={mix:'Parakeet·mix',norm:'Parakeet·norm',dr:'Parakeet·dereverb',L:'Parakeet·L',R:'Parakeet·R',se_mix:'StuPASE',se_norm:'Norm→StuPASE',w_mix:'Whisper·mix',w_norm:'Whisper·norm',w_dr:'Whisper·dereverb',w_se_mix:'Whisper·StuPASE',peel:'peel',qwen:'Qwen'}[curSeg.winner]||curSeg.winner||'—';
    let h=`<span class="dot" style="background:${SRCCOL[curSeg.winner]||'#3a4150'}"></span>source <b>${wl}</b>`+(curSeg.conf!=null?` · conf ${(+curSeg.conf).toFixed(3)}`:'')+(curSeg.nsrc?` <span class="mono2">· ${curSeg.nsrc} cand</span>`:'');
    if(curSeg.el_agree!=null) h+=` <span class="mono2">· EL agree ${curSeg.el_agree}</span>`;
    sd.innerHTML=h;
