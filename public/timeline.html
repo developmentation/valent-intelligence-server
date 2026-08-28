@@ -26,6 +26,11 @@ h1{font-size:22px;margin:.2em 0 .1em;letter-spacing:-.01em}
 .elhdr #elcount{color:var(--muted)}
 .elbody{font-family:var(--serif);font-size:19px;line-height:1.35;padding:2px 13px 12px;color:#5b6b82}
 .elbody .cur{background:#2b6cb0;color:#fff;padding:2px 4px;border-radius:5px;font-weight:600}
+.rolabel{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:10px 2px 3px}
+.rolabel b{color:var(--ink);font-weight:600}
+#ellabel{color:#7fb3ff}
+.readout.el{color:#9ecbff;background:#0f1621;border-color:#26344d;font-size:20px}
+.readout.el .cur{background:#2b6cb0;color:#fff}
 .bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0 6px}
 button.play{background:var(--accent);color:#fff;border:0;border-radius:22px;font-family:var(--mono);font-size:14px;font-weight:600;padding:9px 20px;cursor:pointer}
 .t{font-family:var(--mono);font-size:13px;color:var(--muted)}.t b{color:var(--ink)}
@@ -52,10 +57,13 @@ a{color:var(--accent)}
 <h1 id="h1">Audio Truth Timeline</h1>
 <p class="sub" id="sub">Loading…</p>
 <div id="err"></div>
+<div class="rolabel">Ours — <b>Parakeet + Qwen fusion</b></div>
 <div class="readout" id="readout"></div>
+<div class="rolabel" id="ellabel" style="display:none">ElevenLabs <span id="elcount" class="mono2"></span></div>
+<div class="readout el" id="elreadout" style="display:none"></div>
 <div class="segdec" id="segdec"></div>
 <div class="elpanel" id="elpanel" style="display:none">
- <div class="elhdr" id="elhdr"><span id="elarrow">▸</span> ElevenLabs transcript <span id="elcount" class="mono2"></span></div>
+ <div class="elhdr" id="elhdr"><span id="elarrow">▸</span> ElevenLabs — full transcript</div>
  <div class="elbody" id="elbody" style="display:none"></div>
 </div>
 <div class="bar">
@@ -100,7 +108,7 @@ async function boot(){
   }catch(e){ $('err').innerHTML='<div class="err">Could not load timeline: '+esc(e.message)+'</div>'; $('sub').textContent=''; return; }
   DUR=D.dur||0; tags=D.tags||[]; words=D.words||[]; segs=D.segs||[]; elWords=D.el_words||[];
   if(D.has_el && elWords.length){
-    $('elpanel').style.display='block';
+    $('ellabel').style.display='block'; $('elreadout').style.display='block'; $('elpanel').style.display='block';
     $('elcount').textContent=`— ${elWords.length} words vs ${words.length} ours`;
     $('elhdr').onclick=()=>{elOpen=!elOpen;$('elbody').style.display=elOpen?'block':'none';$('elarrow').textContent=elOpen?'▾':'▸';draw();};
   }
@@ -183,18 +191,19 @@ function draw(){
  if(idx>=0){let html='';for(let i=Math.max(0,idx-9);i<Math.min(words.length,idx+11);i++){const wd=words[i];
    if(i===idx)html+=`<span class="cur" style="background:${confCol(wd.c)};color:#000">${esc(wd.w)}</span> `;
    else html+=`<span style="color:${confCol(wd.c)}">${esc(wd.w)}</span> `;}ro.innerHTML=html;}
- // ElevenLabs transcript streaming word-by-word (when the accordion is open) — both finals during playback
- if(elOpen && elWords.length){
+ // ElevenLabs streams word-by-word synced to the playhead, ALWAYS (its own readout under ours) so both finals
+ // scroll together for side-by-side comparison; the accordion mirrors it as a bigger block when opened.
+ if(elWords.length){
    let ei=Math.max(0,lb(elWords,'t0',cur)-1);
    while(ei<elWords.length-1 && elWords[ei].t1<cur) ei++;
-   let eh='';for(let i=Math.max(0,ei-8);i<Math.min(elWords.length,ei+12);i++){const w=elWords[i];const on=cur>=w.t0&&cur<w.t1;
-     eh+= on?`<span class="cur">${esc(w.w)}</span> `:`<span>${esc(w.w)}</span> `;}
-   $('elbody').innerHTML=eh;
+   let eh='';for(let i=Math.max(0,ei-10);i<Math.min(elWords.length,ei+12);i++){const w=elWords[i];const cw=cur>=w.t0&&cur<w.t1;
+     eh+= cw?`<span class="cur">${esc(w.w)}</span> `:`<span>${esc(w.w)}</span> `;}
+   $('elreadout').innerHTML=eh; if(elOpen) $('elbody').innerHTML=eh;
  }
  const sd=$('segdec');
  if(curSeg){const wl={mix:'Parakeet·mix',norm:'Parakeet·norm',L:'Parakeet·L',R:'Parakeet·R',se_mix:'StuPASE',se_norm:'Norm→StuPASE',peel:'peel',qwen:'Qwen'}[curSeg.winner]||curSeg.winner||'—';
    let h=`<span class="dot" style="background:${SRCCOL[curSeg.winner]||'#3a4150'}"></span>source <b>${wl}</b>`+(curSeg.conf!=null?` · conf ${(+curSeg.conf).toFixed(3)}`:'')+(curSeg.nsrc?` <span class="mono2">· ${curSeg.nsrc} cand</span>`:'');
-   if(curSeg.el) h+=`<div class="elc">ElevenLabs${curSeg.el_agree!=null?` <span class="mono2">(agree ${curSeg.el_agree})</span>`:''}: ${esc(curSeg.el.slice(0,180))}</div>`;
+   if(curSeg.el_agree!=null) h+=` <span class="mono2">· EL agree ${curSeg.el_agree}</span>`;
    sd.innerHTML=h;
  } else sd.innerHTML='';
 }
