@@ -21,6 +21,11 @@ h1{font-size:22px;margin:.2em 0 .1em;letter-spacing:-.01em}
 .segdec .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:0}
 .segdec .mono2{color:var(--muted);font-size:11px}
 .segdec .elc{margin-top:4px;color:#9ecbff;font-family:var(--serif);font-size:15px;line-height:1.3}
+.elpanel{margin:2px 0 8px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0f1621}
+.elhdr{font-family:var(--mono);font-size:12px;color:#9ecbff;padding:8px 12px;cursor:pointer;user-select:none;letter-spacing:.03em}
+.elhdr #elcount{color:var(--muted)}
+.elbody{font-family:var(--serif);font-size:19px;line-height:1.35;padding:2px 13px 12px;color:#5b6b82}
+.elbody .cur{background:#2b6cb0;color:#fff;padding:2px 4px;border-radius:5px;font-weight:600}
 .bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0 6px}
 button.play{background:var(--accent);color:#fff;border:0;border-radius:22px;font-family:var(--mono);font-size:14px;font-weight:600;padding:9px 20px;cursor:pointer}
 .t{font-family:var(--mono);font-size:13px;color:var(--muted)}.t b{color:var(--ink)}
@@ -49,6 +54,10 @@ a{color:var(--accent)}
 <div id="err"></div>
 <div class="readout" id="readout"></div>
 <div class="segdec" id="segdec"></div>
+<div class="elpanel" id="elpanel" style="display:none">
+ <div class="elhdr" id="elhdr"><span id="elarrow">▸</span> ElevenLabs transcript <span id="elcount" class="mono2"></span></div>
+ <div class="elbody" id="elbody" style="display:none"></div>
+</div>
 <div class="bar">
  <button class="play" id="play">▶ Play</button>
  <span class="t"><b id="cur">0:00</b> / <span id="dur">–</span></span>
@@ -58,8 +67,9 @@ a{color:var(--accent)}
 <canvas id="cv"></canvas>
 <div class="legend">
  <span><span class="sw grad-conf"></span> word confidence (red→green)</span>
- <span><span class="sw grad-nf"></span> near↔far / reverb / C50</span>
- <span><span class="sw" style="background:var(--noise)"></span> SNR (noisier=taller)</span>
+ <span><span class="sw grad-nf"></span> near↔far / reverb / C50 (Brouhaha)</span>
+ <span><span class="sw" style="background:var(--noise)"></span> SNR·Brouhaha (noisier=taller)</span>
+ <span><span class="sw" style="background:rgb(110,150,255)"></span> VAD·Brouhaha (speech prob)</span>
  <span><span class="sw" style="background:var(--olap)"></span> overlap (OSD)</span>
  <span><span class="sw" style="background:#35c46a"></span> winning source</span>
 </div>
@@ -70,7 +80,7 @@ a{color:var(--accent)}
 <script>
 const SID = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop()||'');
 const $=id=>document.getElementById(id);
-const AU=$('au'); let D=null, PMIN=null, PMAX=null, PR=100, DUR=0, viewSec=16, tags=[], words=[], segs=[];
+const AU=$('au'); let D=null, PMIN=null, PMAX=null, PR=100, DUR=0, viewSec=16, tags=[], words=[], segs=[], elWords=[], elOpen=false;
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function fmt(t){t=Math.max(0,t||0);const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=Math.floor(t%60);return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(s).padStart(2,'0');}
 function b64i8(b){const bin=atob(b);const a=new Int8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i)<<24>>24;return a;}
@@ -88,10 +98,15 @@ async function boot(){
     if(!r.ok) throw new Error('timeline.json not found ('+r.status+') — has this session been processed?');
     D=await r.json();
   }catch(e){ $('err').innerHTML='<div class="err">Could not load timeline: '+esc(e.message)+'</div>'; $('sub').textContent=''; return; }
-  DUR=D.dur||0; tags=D.tags||[]; words=D.words||[]; segs=D.segs||[];
+  DUR=D.dur||0; tags=D.tags||[]; words=D.words||[]; segs=D.segs||[]; elWords=D.el_words||[];
+  if(D.has_el && elWords.length){
+    $('elpanel').style.display='block';
+    $('elcount').textContent=`— ${elWords.length} words vs ${words.length} ours`;
+    $('elhdr').onclick=()=>{elOpen=!elOpen;$('elbody').style.display=elOpen?'block':'none';$('elarrow').textContent=elOpen?'▾':'▸';draw();};
+  }
   if(D.peaks){PR=D.peaks.rate||100;PMIN=b64i8(D.peaks.min);PMAX=b64i8(D.peaks.max);}
   $('h1').textContent='Audio Truth Timeline — '+SID;
-  $('sub').innerHTML='Full session streamed from the server ('+fmt(DUR)+', '+(D.stereo?'stereo':'mono')+'). Words shaded by <b>fused confidence</b>; lanes = near/far (coherence), reverb (SRMR), C50 (Brouhaha), SNR, overlap (OSD). The <b>source</b> lane shows which candidate won each segment. Scrub anywhere; drag zoom.';
+  $('sub').innerHTML='Full session streamed from the server ('+fmt(DUR)+', '+(D.stereo?'stereo':'mono')+'). Words shaded by <b>fused confidence</b>; lanes = near/far (coherence), reverb (SRMR), and Brouhaha\'s three outputs (C50, SNR, VAD), overlap (OSD). The <b>source</b> lane shows which candidate won each segment'+(D.has_el?'; expand <b>ElevenLabs transcript</b> to stream both finals side by side':'')+'. Scrub anywhere; drag zoom.';
   $('dur').textContent=fmt(DUR);
   $('foot').innerHTML='Session '+SID+' · '+(D.n_segments||segs.length)+' segments · pipeline: candidate matrix (Parakeet on '+(D.variants||'mix/norm/StuPASE/…')+' + Qwen) → N-way confidence fusion. Audio streamed via HLS; nothing embedded.';
   setupAudio(); fit(); draw();
@@ -112,7 +127,7 @@ function lb(arr,key,x){let lo=0,hi=arr.length;while(lo<hi){const m=(lo+hi)>>1;if
 function draw(){
  const W=cv.clientWidth,H=320;ctx.clearRect(0,0,W,H);
  const cur=AU.currentTime||0;const t0=cur-viewSec*0.5,t1=t0+viewSec;const X=t=>(t-t0)/viewSec*W;
- const wfY=8,wfH=74,nfY=88,nfH=13,rvY=103,rvH=13,c5Y=118,c5H=13,snY=133,snH=13,olY=148,olH=11,rtY=162,rtH=12,wdY=178,wdH=64;
+ const wfY=8,wfH=64,nfY=78,nfH=12,rvY=92,rvH=12,c5Y=106,c5H=12,snY=120,snH=12,vaY=134,vaH=12,olY=148,olH=11,rtY=161,rtH=12,wdY=176,wdH=66;
  // waveform
  ctx.fillStyle='#1c2430';ctx.fillRect(0,wfY,W,wfH);
  if(PMIN){ctx.strokeStyle='#3d5a80';ctx.beginPath();const i0=Math.max(0,Math.floor(t0*PR)),i1=Math.min(PMIN.length,Math.ceil(t1*PR));
@@ -123,8 +138,9 @@ function draw(){
    const sp=g.sp,a=sp?1:0.5;   // non-speech (road noise etc.) still shows its acoustic tags, just a touch dimmer
    if(g.coh!=null){ctx.globalAlpha=a;ctx.fillStyle=nfCol(g.coh);ctx.fillRect(x,nfY,w,nfH);}
    if(g.srmr!=null){ctx.globalAlpha=a;ctx.fillStyle=rvCol(g.srmr);ctx.fillRect(x,rvY,w,rvH);}
-   if(g.c50!=null){ctx.globalAlpha=a;ctx.fillStyle=c50Col(g.c50);ctx.fillRect(x,c5Y,w,c5H);}
-   if(g.snr!=null){const nz=Math.max(0,Math.min(1,(40-g.snr)/18));ctx.globalAlpha=sp?0.15+0.85*nz:0.1;ctx.fillStyle='rgb(224,85,110)';ctx.fillRect(x,snY+snH*(1-nz),w,snH*nz+2);}
+   if(g.c50!=null){ctx.globalAlpha=a;ctx.fillStyle=c50Col(g.c50);ctx.fillRect(x,c5Y,w,c5H);}                       // Brouhaha C50
+   {const bs=g.bsnr!=null?g.bsnr:g.snr; if(bs!=null){const nz=Math.max(0,Math.min(1,(g.bsnr!=null?(20-bs)/30:(40-bs)/18)));ctx.globalAlpha=sp?0.15+0.85*nz:0.12;ctx.fillStyle='rgb(224,85,110)';ctx.fillRect(x,snY+snH*(1-nz),w,snH*nz+2);}}  // Brouhaha SNR (fallback our SNR)
+   if(g.bvad!=null){ctx.globalAlpha=0.25+0.7*g.bvad;ctx.fillStyle='rgb(110,150,255)';ctx.fillRect(x,vaY+vaH*(1-g.bvad),w,vaH*g.bvad+1);}  // Brouhaha VAD (speech prob)
    const ov=Math.max(0,Math.min(1,g.ov==null?0:g.ov));ctx.globalAlpha=ov;ctx.fillStyle='#a97bff';ctx.fillRect(x,olY,w,olH*(0.35+0.65*ov));
  }
  ctx.globalAlpha=1;
@@ -135,7 +151,7 @@ function draw(){
  ctx.globalAlpha=1;
  // labels
  ctx.font='10px IBM Plex Mono';ctx.fillStyle='#8b93a1';
- ctx.fillText('waveform',6,wfY+11);ctx.fillText(D.stereo?'near↔far':'near↔far·mono',6,nfY+11);ctx.fillText('reverb·SRMR',6,rvY+11);ctx.fillText('C50·Brouhaha',6,c5Y+11);ctx.fillText('SNR',6,snY+11);ctx.fillText('overlap',6,olY+10);ctx.fillText('source',6,rtY+10);
+ ctx.fillText('waveform',6,wfY+11);ctx.fillText(D.stereo?'near↔far':'near↔far·mono',6,nfY+11);ctx.fillText('reverb·SRMR',6,rvY+11);ctx.fillText('C50·Brouhaha',6,c5Y+11);ctx.fillText('SNR·Brouhaha',6,snY+11);ctx.fillText('VAD·Brouhaha',6,vaY+11);ctx.fillText('overlap',6,olY+10);ctx.fillText('source',6,rtY+10);
  // words
  ctx.fillStyle='#0e131b';ctx.fillRect(0,wdY,W,wdH);let curWord=null;
  let wi=Math.max(0,lb(words,'t0',t0-2));
@@ -154,6 +170,14 @@ function draw(){
  if(idx>=0){let html='';for(let i=Math.max(0,idx-9);i<Math.min(words.length,idx+11);i++){const wd=words[i];
    if(i===idx)html+=`<span class="cur" style="background:${confCol(wd.c)};color:#000">${esc(wd.w)}</span> `;
    else html+=`<span style="color:${confCol(wd.c)}">${esc(wd.w)}</span> `;}ro.innerHTML=html;}
+ // ElevenLabs transcript streaming word-by-word (when the accordion is open) — both finals during playback
+ if(elOpen && elWords.length){
+   let ei=Math.max(0,lb(elWords,'t0',cur)-1);
+   while(ei<elWords.length-1 && elWords[ei].t1<cur) ei++;
+   let eh='';for(let i=Math.max(0,ei-8);i<Math.min(elWords.length,ei+12);i++){const w=elWords[i];const on=cur>=w.t0&&cur<w.t1;
+     eh+= on?`<span class="cur">${esc(w.w)}</span> `:`<span>${esc(w.w)}</span> `;}
+   $('elbody').innerHTML=eh;
+ }
  const sd=$('segdec');
  if(curSeg){const wl={mix:'Parakeet·mix',norm:'Parakeet·norm',L:'Parakeet·L',R:'Parakeet·R',se_mix:'StuPASE',se_norm:'Norm→StuPASE',peel:'peel',qwen:'Qwen'}[curSeg.winner]||curSeg.winner||'—';
    let h=`<span class="dot" style="background:${SRCCOL[curSeg.winner]||'#3a4150'}"></span>source <b>${wl}</b>`+(curSeg.conf!=null?` · conf ${(+curSeg.conf).toFixed(3)}`:'')+(curSeg.nsrc?` <span class="mono2">· ${curSeg.nsrc} cand</span>`:'');
