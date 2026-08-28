@@ -113,11 +113,24 @@ async function boot(){
 }
 function setupAudio(){
   const src='/api/audio/hls?session='+encodeURIComponent(SID);
-  if(AU.canPlayType('application/vnd.apple.mpegurl')){ AU.src=src; }
-  else if(window.Hls&&Hls.isSupported()){ const hls=new Hls({xhrSetup:x=>{x.withCredentials=true;}}); hls.loadSource(src); hls.attachMedia(AU);
-    hls.on(Hls.ErrorData?'hlsError':Hls.Events.ERROR,()=>{}); }
+  // PREFER hls.js when it's supported: it transmuxes our raw-ADTS-AAC segments through MSE and reliably
+  // produces audio on Android/desktop. Native HLS (AU.src=m3u8) is used ONLY as the last resort for
+  // Safari/iOS — on Android browsers that merely *claim* HLS ('maybe' from canPlayType) native playback
+  // silently advances currentTime with NO sound, which is the "clock moves but silence" bug. So hls.js first.
+  if(window.Hls&&Hls.isSupported()){
+    const hls=new Hls({xhrSetup:x=>{x.withCredentials=true;},maxBufferLength:30,maxMaxBufferLength:120});
+    window._hls=hls; hls.loadSource(src); hls.attachMedia(AU);
+    hls.on(Hls.Events.ERROR,(_e,data)=>{ if(!data||!data.fatal) return;
+      if(data.type===Hls.ErrorTypes.NETWORK_ERROR){ hls.startLoad(); }
+      else if(data.type===Hls.ErrorTypes.MEDIA_ERROR){ hls.recoverMediaError(); }
+      else { $('err').innerHTML='<div class="err">Audio stream error: '+esc((data.details||'')+' — '+(data.reason||''))+'</div>'; }
+    });
+  } else if(AU.canPlayType('application/vnd.apple.mpegurl')){ AU.src=src; }   // Safari/iOS native
   else { $('err').innerHTML='<div class="err">This browser can\'t play HLS and hls.js failed to load.</div>'; }
   AU.addEventListener('loadedmetadata',()=>{ if(isFinite(AU.duration)&&AU.duration>0){DUR=Math.max(DUR,AU.duration);$('dur').textContent=fmt(DUR);} });
+  // If playback was requested but no audio actually advances, tell the user rather than sitting silent.
+  AU.addEventListener('play',()=>{ const t0=AU.currentTime; setTimeout(()=>{ if(!AU.paused && AU.currentTime<=t0+0.05){
+    $('err').innerHTML='<div class="err">Audio isn\'t advancing — the stream may have failed to load. Try reloading; if it persists the segments aren\'t decoding on this browser.</div>'; } },2500); });
 }
 const cv=$('cv'),ctx=cv.getContext('2d');let dpr=Math.max(1,Math.min(2,window.devicePixelRatio||1)),raf=0;
 function fit(){const w=cv.clientWidth;cv.width=w*dpr;cv.height=320*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);}
