@@ -31,6 +31,8 @@ h1{font-size:22px;margin:.2em 0 .1em;letter-spacing:-.01em}
 #ellabel{color:#7fb3ff}
 .readout.el{color:#9ecbff;background:#0f1621;border-color:#26344d;font-size:20px}
 .readout.el .cur{background:#2b6cb0;color:#fff}
+.readout.mini{font-size:16px;min-height:auto;padding:7px 11px;line-height:1.3}
+.readout .cur{color:#000}
 .bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0 6px}
 button.play{background:var(--accent);color:#fff;border:0;border-radius:22px;font-family:var(--mono);font-size:14px;font-weight:600;padding:9px 20px;cursor:pointer}
 .t{font-family:var(--mono);font-size:13px;color:var(--muted)}.t b{color:var(--ink)}
@@ -57,15 +59,8 @@ a{color:var(--accent)}
 <h1 id="h1">Audio Truth Timeline</h1>
 <p class="sub" id="sub">Loading…</p>
 <div id="err"></div>
-<div class="rolabel">Ours — <b>Parakeet + Qwen fusion</b></div>
-<div class="readout" id="readout"></div>
-<div class="rolabel" id="ellabel" style="display:none">ElevenLabs <span id="elcount" class="mono2"></span></div>
-<div class="readout el" id="elreadout" style="display:none"></div>
+<div id="readouts"></div>
 <div class="segdec" id="segdec"></div>
-<div class="elpanel" id="elpanel" style="display:none">
- <div class="elhdr" id="elhdr"><span id="elarrow">▸</span> ElevenLabs — full transcript</div>
- <div class="elbody" id="elbody" style="display:none"></div>
-</div>
 <div class="bar">
  <button class="play" id="play">▶ Play</button>
  <span class="t"><b id="cur">0:00</b> / <span id="dur">–</span></span>
@@ -88,7 +83,7 @@ a{color:var(--accent)}
 <script>
 const SID = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop()||'');
 const $=id=>document.getElementById(id);
-const AU=$('au'); let D=null, PMIN=null, PMAX=null, PR=100, DUR=0, viewSec=16, tags=[], words=[], segs=[], elWords=[], elOpen=false;
+const AU=$('au'); let D=null, PMIN=null, PMAX=null, PR=100, DUR=0, viewSec=16, tags=[], words=[], segs=[], elWords=[], elOpen=false, STREAMS=[], CANVAS_H=340;
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function fmt(t){t=Math.max(0,t||0);const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=Math.floor(t%60);return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(s).padStart(2,'0');}
 function b64i8(b){const bin=atob(b);const a=new Int8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i)<<24>>24;return a;}
@@ -108,14 +103,21 @@ async function boot(){
     D=await r.json();
   }catch(e){ $('err').innerHTML='<div class="err">Could not load timeline: '+esc(e.message)+'</div>'; $('sub').textContent=''; return; }
   DUR=D.dur||0; tags=D.tags||[]; words=D.words||[]; segs=D.segs||[]; elWords=D.el_words||[];
-  if(D.has_el && elWords.length){
-    $('ellabel').style.display='block'; $('elreadout').style.display='block'; $('elpanel').style.display='block';
-    $('elcount').textContent=`— ${elWords.length} words vs ${words.length} ours`;
-    $('elhdr').onclick=()=>{elOpen=!elOpen;$('elbody').style.display=elOpen?'block':'none';$('elarrow').textContent=elOpen?'▾':'▸';draw();};
-  }
+  // build the stream list: fused 'ours' first, then each sovereign model, then ElevenLabs — each streams + gets a band
+  STREAMS=[{name:'Ours — Parakeet+Qwen+Whisper fusion', words:words, conf:true, color:'#e8eaee'}];
+  (D.model_streams||[]).forEach(s=>STREAMS.push({name:s.name, words:s.words||[], color:s.color}));
+  if(D.has_el && elWords.length) STREAMS.push({name:'ElevenLabs (reference)', words:elWords, color:'#7fb3ff'});
+  const rc=$('readouts'); rc.innerHTML='';
+  STREAMS.forEach(s=>{
+    const lab=document.createElement('div'); lab.className='rolabel'; lab.style.color=s.color||'var(--muted)';
+    lab.innerHTML=esc(s.name)+' <span class="mono2">· '+s.words.length+' words</span>';
+    const ro=document.createElement('div'); ro.className='readout'+(s.conf?'':' mini'); if(!s.conf) ro.style.color=s.color;
+    rc.appendChild(lab); rc.appendChild(ro); s.ro=ro;
+  });
+  CANVAS_H = 176 + STREAMS.length*46 + 6;
   if(D.peaks){PR=D.peaks.rate||100;PMIN=b64i8(D.peaks.min);PMAX=b64i8(D.peaks.max);}
   $('h1').textContent='Audio Truth Timeline — '+SID;
-  $('sub').innerHTML='Full session streamed from the server ('+fmt(DUR)+', '+(D.stereo?'stereo':'mono')+'). Words shaded by <b>fused confidence</b>; lanes = near/far (coherence), reverb (SRMR), and Brouhaha\'s three outputs (C50, SNR, VAD), overlap (OSD). The <b>source</b> lane shows which candidate won each segment'+(D.has_el?'; expand <b>ElevenLabs transcript</b> to stream both finals side by side':'')+'. Scrub anywhere; drag zoom.';
+  $('sub').innerHTML='Full session streamed from the server ('+fmt(DUR)+', '+(D.stereo?'stereo':'mono')+'). Each sovereign model — <b>Parakeet, Whisper, StuPASE</b>'+((D.model_streams||[]).some(s=>s.name.includes('dereverb'))?' (+ dereverb)':'')+' — plus the <b>fused</b> result'+(D.has_el?' and <b>ElevenLabs</b>':'')+' streams word-by-word aligned to the audio, each with its own word-bar band. Lanes above: near/far, reverb (SRMR), Brouhaha C50/SNR/VAD, overlap (OSD), and the winning <b>source</b> per segment. Scrub anywhere; drag zoom.';
   $('dur').textContent=fmt(DUR);
   $('foot').innerHTML='Session '+SID+' · '+(D.n_segments||segs.length)+' segments · pipeline: candidate matrix (Parakeet on '+(D.variants||'mix/norm/StuPASE/…')+' + Qwen) → N-way confidence fusion. Audio streamed via HLS; nothing embedded.';
   setupAudio(); fit(); draw();
@@ -142,14 +144,15 @@ function setupAudio(){
     $('err').innerHTML='<div class="err">Audio isn\'t advancing — the stream may have failed to load. Try reloading; if it persists the segments aren\'t decoding on this browser.</div>'; } },2500); });
 }
 const cv=$('cv'),ctx=cv.getContext('2d');let dpr=Math.max(1,Math.min(2,window.devicePixelRatio||1)),raf=0;
-function fit(){const w=cv.clientWidth;cv.width=w*dpr;cv.height=340*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);}
+function fit(){cv.style.height=CANVAS_H+'px';const w=cv.clientWidth;cv.width=w*dpr;cv.height=CANVAS_H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);}
 window.addEventListener('resize',()=>{fit();draw();});
 // time-sorted range helpers (binary search first index with .t or .t0 >= x)
 function lb(arr,key,x){let lo=0,hi=arr.length;while(lo<hi){const m=(lo+hi)>>1;if((arr[m][key])<x)lo=m+1;else hi=m;}return lo;}
 function draw(){
- const W=cv.clientWidth,H=340;ctx.clearRect(0,0,W,H);
+ const W=cv.clientWidth,H=CANVAS_H;ctx.clearRect(0,0,W,H);
  const cur=AU.currentTime||0;const t0=cur-viewSec*0.5,t1=t0+viewSec;const X=t=>(t-t0)/viewSec*W;
- const wfY=8,wfH=64,nfY=78,nfH=12,rvY=92,rvH=12,c5Y=106,c5H=12,snY=120,snH=12,vaY=134,vaH=12,olY=148,olH=11,rtY=161,rtH=12,wdY=176,wdH=62,ewY=242,ewH=62;
+ const wfY=8,wfH=64,nfY=78,nfH=12,rvY=92,rvH=12,c5Y=106,c5H=12,snY=120,snH=12,vaY=134,vaH=12,olY=148,olH=11,rtY=161,rtH=12;
+ const band0=176,bandH=44,bandGap=2;   // word bands: one per model stream
  // waveform
  ctx.fillStyle='#1c2430';ctx.fillRect(0,wfY,W,wfH);
  if(PMIN){ctx.strokeStyle='#3d5a80';ctx.beginPath();const i0=Math.max(0,Math.floor(t0*PR)),i1=Math.min(PMIN.length,Math.ceil(t1*PR));
@@ -174,49 +177,31 @@ function draw(){
  // labels
  ctx.font='10px IBM Plex Mono';ctx.fillStyle='#8b93a1';
  ctx.fillText('waveform',6,wfY+11);ctx.fillText(D.stereo?'near↔far':'near↔far·mono',6,nfY+11);ctx.fillText('reverb·SRMR',6,rvY+11);ctx.fillText('C50·Brouhaha',6,c5Y+11);ctx.fillText('SNR·Brouhaha',6,snY+11);ctx.fillText('VAD·Brouhaha',6,vaY+11);ctx.fillText('overlap',6,olY+10);ctx.fillText('source',6,rtY+10);
- // word band 1 — OURS (Parakeet+Qwen fusion); bars shaded by fused confidence
- ctx.fillStyle='#0e131b';ctx.fillRect(0,wdY,W,wdH);let curWord=null;
- let wi=Math.max(0,lb(words,'t0',t0-2));
- for(let k=wi;k<words.length;k++){const wd=words[k];if(wd.t0>t1)break;if(wd.t1<t0)continue;
-   const x=X(wd.t0),w=Math.max(6,X(wd.t1)-X(wd.t0));const on=cur>=wd.t0&&cur<wd.t1;if(on)curWord=wd;
-   ctx.globalAlpha=on?1:0.82;ctx.fillStyle=confCol(wd.c);ctx.fillRect(x+1,wdY+10,w-2,wdH-30);
-   ctx.globalAlpha=1;ctx.fillStyle=on?'#fff':'#c3c9d4';ctx.font=(on?'600 ':'')+'13px IBM Plex Sans';
-   ctx.save();ctx.beginPath();ctx.rect(x+1,wdY,w-2,wdH);ctx.clip();ctx.fillText(wd.w,x+4,wdY+wdH-8);ctx.restore();}
- // word band 2 — ELEVENLABS (uniform EL blue, no per-word confidence), aligned directly under ours to compare
- if(elWords.length){
-   ctx.fillStyle='#0e131b';ctx.fillRect(0,ewY,W,ewH);
-   let ewi=Math.max(0,lb(elWords,'t0',t0-2));
-   for(let k=ewi;k<elWords.length;k++){const wd=elWords[k];if(wd.t0>t1)break;if(wd.t1<t0)continue;
-     const x=X(wd.t0),w=Math.max(6,X(wd.t1)-X(wd.t0));const on=cur>=wd.t0&&cur<wd.t1;
-     ctx.globalAlpha=on?1:0.8;ctx.fillStyle=on?'#5b93d6':'#33557f';ctx.fillRect(x+1,ewY+10,w-2,ewH-30);
-     ctx.globalAlpha=1;ctx.fillStyle=on?'#fff':'#bcd3ef';ctx.font=(on?'600 ':'')+'13px IBM Plex Sans';
-     ctx.save();ctx.beginPath();ctx.rect(x+1,ewY,w-2,ewH);ctx.clip();ctx.fillText(wd.w,x+4,ewY+ewH-8);ctx.restore();}
- }
- // band labels on top (small dark backing so they read over the bars)
- ctx.globalAlpha=1;ctx.font='10px IBM Plex Mono';
- const _bl=[['Parakeet',wdY,'#8b93a1']]; if(elWords.length)_bl.push(['ElevenLabs',ewY,'#7fb3ff']);
- for(const [lab,yy,col] of _bl){const tw=ctx.measureText(lab).width;
-   ctx.globalAlpha=0.74;ctx.fillStyle='#0e131b';ctx.fillRect(3,yy+2,tw+7,12);
-   ctx.globalAlpha=1;ctx.fillStyle=col;ctx.fillText(lab,6,yy+11);}
- // playhead (spans through both word bands)
- const px=X(cur);ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(px,0);ctx.lineTo(px,(elWords.length?ewY+ewH:wdY+wdH));ctx.stroke();
+ // word bands — ONE PER MODEL STREAM (Ours, Parakeet, Whisper, StuPASE, dereverb, ElevenLabs), all time-aligned
+ STREAMS.forEach((s,si)=>{ const y=band0+si*(bandH+bandGap), arr=s.words||[];
+   ctx.fillStyle='#0e131b';ctx.fillRect(0,y,W,bandH);
+   let wi=Math.max(0,lb(arr,'t0',t0-2));
+   for(let k=wi;k<arr.length;k++){const wd=arr[k];if(wd.t0>t1)break;if(wd.t1<t0)continue;
+     const x=X(wd.t0),w=Math.max(5,X(wd.t1)-X(wd.t0));const on=cur>=wd.t0&&cur<wd.t1;
+     ctx.globalAlpha=on?1:0.8;ctx.fillStyle=s.conf?confCol(wd.c):(s.color||'#4f8cff');ctx.fillRect(x+1,y+7,w-2,bandH-24);
+     ctx.globalAlpha=1;ctx.fillStyle=on?'#fff':'#c3c9d4';ctx.font=(on?'600 ':'')+'12px IBM Plex Sans';
+     ctx.save();ctx.beginPath();ctx.rect(x+1,y,w-2,bandH);ctx.clip();ctx.fillText(wd.w,x+3,y+bandH-6);ctx.restore();}
+   ctx.globalAlpha=1;ctx.font='10px IBM Plex Mono';const tw=ctx.measureText(s.name).width;   // label chip
+   ctx.globalAlpha=0.78;ctx.fillStyle='#0e131b';ctx.fillRect(3,y+2,tw+7,12);
+   ctx.globalAlpha=1;ctx.fillStyle=s.color||'#8b93a1';ctx.fillText(s.name,6,y+11);
+ });
+ // playhead (spans all bands)
+ const px=X(cur);ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(px,0);ctx.lineTo(px,band0+STREAMS.length*(bandH+bandGap));ctx.stroke();
  ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(px-5,0);ctx.lineTo(px+5,0);ctx.lineTo(px,7);ctx.fill();
- // readout + chip
+ // readouts — every stream streams word-by-word synced to the playhead, so all models scroll together
  $('cur').textContent=fmt(cur);
  $('scrubov').style.width=(DUR?cur/DUR*100:0)+'%';$('scrubph').style.left=(DUR?cur/DUR*100:0)+'%';
- const ro=$('readout');const idx=words.indexOf(curWord);
- if(idx>=0){let html='';for(let i=Math.max(0,idx-9);i<Math.min(words.length,idx+11);i++){const wd=words[i];
-   if(i===idx)html+=`<span class="cur" style="background:${confCol(wd.c)};color:#000">${esc(wd.w)}</span> `;
-   else html+=`<span style="color:${confCol(wd.c)}">${esc(wd.w)}</span> `;}ro.innerHTML=html;}
- // ElevenLabs streams word-by-word synced to the playhead, ALWAYS (its own readout under ours) so both finals
- // scroll together for side-by-side comparison; the accordion mirrors it as a bigger block when opened.
- if(elWords.length){
-   let ei=Math.max(0,lb(elWords,'t0',cur)-1);
-   while(ei<elWords.length-1 && elWords[ei].t1<cur) ei++;
-   let eh='';for(let i=Math.max(0,ei-10);i<Math.min(elWords.length,ei+12);i++){const w=elWords[i];const cw=cur>=w.t0&&cur<w.t1;
-     eh+= cw?`<span class="cur">${esc(w.w)}</span> `:`<span>${esc(w.w)}</span> `;}
-   $('elreadout').innerHTML=eh; if(elOpen) $('elbody').innerHTML=eh;
- }
+ STREAMS.forEach(s=>{ if(!s.ro)return; const arr=s.words||[]; if(!arr.length){s.ro.innerHTML='';return;}
+   let ei=Math.max(0,lb(arr,'t0',cur)-1); while(ei<arr.length-1 && arr[ei].t1<cur) ei++;
+   let h='';for(let i=Math.max(0,ei-10);i<Math.min(arr.length,ei+12);i++){const w=arr[i];const on=cur>=w.t0&&cur<w.t1;
+     const col=s.conf?confCol(w.c):(s.color||'#c3c9d4');
+     h+= on?`<span class="cur" style="background:${col}">${esc(w.w)}</span> `:`<span style="color:${col}">${esc(w.w)}</span> `;}
+   s.ro.innerHTML=h; });
  const sd=$('segdec');
  if(curSeg){const wl={mix:'Parakeet·mix',norm:'Parakeet·norm',dr:'Parakeet·dereverb',L:'Parakeet·L',R:'Parakeet·R',se_mix:'StuPASE',se_norm:'Norm→StuPASE',w_mix:'Whisper·mix',w_norm:'Whisper·norm',w_dr:'Whisper·dereverb',w_se_mix:'Whisper·StuPASE',peel:'peel',qwen:'Qwen'}[curSeg.winner]||curSeg.winner||'—';
    let h=`<span class="dot" style="background:${SRCCOL[curSeg.winner]||'#3a4150'}"></span>source <b>${wl}</b>`+(curSeg.conf!=null?` · conf ${(+curSeg.conf).toFixed(3)}`:'')+(curSeg.nsrc?` <span class="mono2">· ${curSeg.nsrc} cand</span>`:'');
