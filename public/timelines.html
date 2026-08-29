@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Valent — Processed Sessions</title>
+<style>
+  :root{--bg:#0d0d0d;--card:#17171a;--edge:#2a2a2e;--ink:#eee;--dim:#9a9aa2;--accent:#3987e5;--cloud:#e0913a}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:22px 26px;border-bottom:1px solid var(--edge);display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  h1{font-size:18px;margin:0;font-weight:650}
+  .sub{color:var(--dim);font-size:13px}
+  main{padding:20px 26px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));max-width:1400px}
+  .card{background:var(--card);border:1px solid var(--edge);border-radius:14px;padding:16px 16px 14px;text-decoration:none;color:inherit;display:flex;flex-direction:column;gap:10px;transition:border-color .12s,transform .12s}
+  .card:hover{border-color:#3d3d44;transform:translateY(-1px)}
+  .sid{font-size:15px;font-weight:640;letter-spacing:.2px}
+  .name{color:var(--dim);font-size:12.5px;margin-top:2px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid #33333a;background:#1e1e22;color:#cfcfd6;font-variant-numeric:tabular-nums}
+  .chip.cloud{border-color:#4a3a22;background:#2a2113;color:var(--cloud)}
+  .meta{display:flex;justify-content:space-between;align-items:center;color:var(--dim);font-size:12px;margin-top:auto;font-variant-numeric:tabular-nums}
+  .go{color:var(--accent);font-weight:600;font-size:12.5px}
+  .empty{color:var(--dim);padding:40px 0}
+</style>
+<header>
+  <h1>Processed sessions</h1>
+  <span class="sub" id="sub">loading…</span>
+</header>
+<main id="grid"></main>
+<script>
+const fmtWall = ms => { if(!ms) return ''; try{ return new Date(Number(ms)).toISOString().replace('T',' ').slice(0,16)+' UTC'; }catch(e){ return ''; } };
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+(async () => {
+  let d;
+  try { const r = await fetch('/api/processed-sessions', {credentials:'same-origin'}); d = await r.json(); }
+  catch(e){ document.getElementById('sub').textContent = 'failed to load'; return; }
+  const S = d.sessions || [];
+  document.getElementById('sub').textContent = S.length + (S.length===1?' session':' sessions') + ' with model data';
+  const grid = document.getElementById('grid');
+  if(!S.length){ grid.innerHTML = '<div class="empty">No processed sessions yet. Run the pipeline + post to /admin/model-transcripts/:session.</div>'; return; }
+  grid.innerHTML = S.map(s => {
+    const chips = (s.models||[]).map(m => {
+      const cloud = String(m).toLowerCase()==='elevenlabs';   // is_cloud models styled distinctly
+      return `<span class="chip${cloud?' cloud':''}">${esc(m)}</span>`;
+    }).join('');
+    const words = Number(s.total_words||0).toLocaleString();
+    return `<a class="card" href="/timeline/${encodeURIComponent(s.session_id)}">
+      <div><div class="sid">${esc(s.session_id)}</div>${s.name&&s.name!=='Valent'?`<div class="name">${esc(s.name)}</div>`:''}</div>
+      <div class="chips">${chips}</div>
+      <div class="meta"><span>${s.n_rows} lanes · ${words} words</span><span class="go">open ▸</span></div>
+      <div class="meta"><span>${fmtWall(s.first_wall)}</span><span>${s.n_cloud>0?s.n_cloud+' cloud':''}</span></div>
+    </a>`;
+  }).join('');
+})();
+</script>

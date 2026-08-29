@@ -698,6 +698,23 @@ app.get('/api/model-transcripts', requireAdmin, async (req, res) => {
   res.json({ session_id: sid, count: q.rows.length, models: q.rows });
 });
 
+// Index of sessions that have model_transcripts data (the "processed sessions" the timeline viewer lists).
+app.get('/api/processed-sessions', requireAdmin, async (_req, res) => {
+  const q = await pool.query(`
+    select mt.session_id,
+           count(*)                              as n_rows,
+           count(*) filter (where not is_cloud)  as n_sovereign,
+           count(*) filter (where is_cloud)      as n_cloud,
+           array_agg(distinct mt.model order by mt.model) as models,
+           sum(coalesce(mt.n_words,0))           as total_words,
+           max(mt.updated_at)                    as updated_at,
+           s.device as name, s.first_wall
+    from model_transcripts mt left join sessions s on s.id = mt.session_id
+    group by mt.session_id, s.device, s.first_wall
+    order by mt.session_id desc`);
+  res.json({ count: q.rows.length, sessions: q.rows });
+});
+
 // Shared de-noised track builder. Decimate across each session's FULL span (never truncate), then run
 // the EXACT phone algorithm (geotrack.clean = Kalman + RTS + glitch gate). Used by /api/track (admin,
 // live tail merged) and the public publication API (fixed session set, no live tail).
@@ -1184,6 +1201,7 @@ app.get('/curate', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname
 // Reads _derived/<sid>/timeline.json (lanes+words+peaks, uploaded by the GPU pipeline) and streams audio via
 // /api/audio/hls?session=  — so it plays across a whole multi-hour session with no embedded-audio size cap.
 app.get('/timeline/:session', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'timeline.html')));
+app.get('/timelines', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'timelines.html')));
 
 // ---- pages ----
 function loginPage(err, next) {
