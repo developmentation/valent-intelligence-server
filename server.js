@@ -532,6 +532,35 @@ app.post('/admin/transcripts', requireAdmin, express.json({ limit: '64mb' }), as
   finally { client.release(); }
 });
 
+// Multi-model comparison store (migration 0008). Headless producer (GPU pipeline / EL relay) posts ONE row
+// per (session, model, variant) with full per-word {w,s,e,c}. INGEST_TOKEN bearer (machine route), own large
+// json limit before the global 100 kb cap. Upsert on (session_id, model, variant) — re-post replaces.
+// Body: { model, variant?, model_id?, runtime?, is_cloud?, text?, words:[{w,s,e,c}], metrics?, meta? }.
+app.post('/admin/model-transcripts/:session', express.json({ limit: '96mb' }), async (req, res) => {
+  if (!INGEST_TOKEN || (req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const sid = String(req.params.session || '').replace(/[^0-9A-Za-z._-]/g, '');
+  const b = req.body || {};
+  const model = String(b.model || '').slice(0, 80);
+  const variant = String(b.variant || 'mix').slice(0, 40);
+  if (!sid || !model) return res.status(400).json({ error: 'session id and model required' });
+  const words = Array.isArray(b.words) ? b.words : null;
+  const text = b.text != null ? String(b.text) : (words ? words.map(w => w.w).join(' ') : '');
+  const nWords = words ? words.length : null;
+  const srow = (await pool.query('select first_wall from sessions where id=$1', [sid])).rows[0];
+  const firstWall = srow && srow.first_wall != null ? Number(srow.first_wall) : null;
+  try {
+    await pool.query(
+      `insert into model_transcripts (session_id,model,variant,model_id,runtime,is_cloud,text,n_words,words,metrics,meta,first_wall,updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
+       on conflict (session_id,model,variant) do update set
+         model_id=$4, runtime=$5, is_cloud=$6, text=$7, n_words=$8, words=$9, metrics=$10, meta=$11, first_wall=$12, updated_at=now()`,
+      [sid, model, variant, b.model_id || null, b.runtime || null, !!b.is_cloud, text, nWords,
+        words ? JSON.stringify(words) : null, b.metrics ? JSON.stringify(b.metrics) : null,
+        b.meta ? JSON.stringify(b.meta) : null, firstWall]);
+    res.json({ ok: true, session_id: sid, model, variant, n_words: nWords });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
@@ -654,6 +683,19 @@ app.get('/api/transcript/hifi', requireAdmin, async (req, res) => {
      from transcripts where ${where} order by start_ms asc limit 50000`, args);
   if (String(req.query.format) === 'text') return res.type('text').send(q.rows.map((r) => r.text).join(' '));
   res.json({ count: q.rows.length, segments: q.rows.map((r) => ({ ...r, start_ms: Number(r.start_ms), end_ms: Number(r.end_ms) })) });
+});
+
+// Multi-model comparison read (migration 0008 model_transcripts). Browser (JWT). ?session=&model=&variant=&words=1
+// (include the per-word blocks; omit to keep it light). Returns one entry per (model, variant) for the session.
+app.get('/api/model-transcripts', requireAdmin, async (req, res) => {
+  const sid = String(req.query.session || ''); if (!sid) return res.status(400).json({ error: 'session required' });
+  const withWords = req.query.words === '1';
+  const cols = 'model,variant,model_id,runtime,is_cloud,text,n_words,metrics,meta,updated_at' + (withWords ? ',words' : '');
+  const args = [sid]; let where = 'session_id=$1';
+  if (req.query.model) { args.push(String(req.query.model)); where += ` and model=$${args.length}`; }
+  if (req.query.variant) { args.push(String(req.query.variant)); where += ` and variant=$${args.length}`; }
+  const q = await pool.query(`select ${cols} from model_transcripts where ${where} order by is_cloud, model, variant`, args);
+  res.json({ session_id: sid, count: q.rows.length, models: q.rows });
 });
 
 // Shared de-noised track builder. Decimate across each session's FULL span (never truncate), then run
