@@ -561,6 +561,27 @@ app.post('/admin/model-transcripts/:session', express.json({ limit: '96mb' }), a
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Audio-scaffold ingest (migration 0009 timeline_meta) — the pipeline POSTs the audio-derived timeline parts so
+// the timeline assembles fully from the DB (see the /media/_derived/:sid/timeline.json assembler). INGEST_TOKEN,
+// own large json limit (peaks base64 ~1 MB/hr), before the global 100 kb cap. Upsert on session_id.
+// Body: { dur, stereo, noise_floor_db, peaks:{rate,min,max(base64 int8)}, tags:[...], segs:[...], variants, meta }.
+app.post('/admin/timeline-meta/:session', express.json({ limit: '96mb' }), async (req, res) => {
+  if (!INGEST_TOKEN || (req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const sid = String(req.params.session).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const b = req.body || {}; const pk = b.peaks || {};
+  const pmin = pk.min ? Buffer.from(pk.min, 'base64') : null;
+  const pmax = pk.max ? Buffer.from(pk.max, 'base64') : null;
+  try {
+    await pool.query(
+      `insert into timeline_meta (session_id,dur,stereo,noise_floor_db,peaks_rate,peaks_min,peaks_max,tags,segs,variants,meta,updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())
+       on conflict (session_id) do update set dur=$2,stereo=$3,noise_floor_db=$4,peaks_rate=$5,peaks_min=$6,peaks_max=$7,tags=$8,segs=$9,variants=$10,meta=$11,updated_at=now()`,
+      [sid, b.dur ?? null, (b.stereo == null ? null : !!b.stereo), b.noise_floor_db ?? null, pk.rate ?? 100, pmin, pmax,
+        b.tags ? JSON.stringify(b.tags) : null, b.segs ? JSON.stringify(b.segs) : null, b.variants || null, b.meta ? JSON.stringify(b.meta) : null]);
+    res.json({ ok: true, session: sid, tags: (b.tags || []).length, segs: (b.segs || []).length, has_peaks: !!pmin });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
@@ -1053,6 +1074,48 @@ app.get('/api/manifest', requireAdmin, async (req, res) => {
   });
 });
 
+// ---- fully DB-driven timeline ----
+// Assemble the WHOLE timeline JSON from the DB: audio scaffold from timeline_meta (0009) + transcript lanes from
+// model_transcripts (0008). "DB = truth" for the entire timeline; the stored _derived blob is only a legacy
+// fallback. Registered BEFORE the /media/* catch-all so it wins; the client (timeline.html) fetches the same URL.
+const STREAM_STYLE = {
+  parakeet: { name: 'Parakeet', color: '#4f8cff' }, whisper: { name: 'Whisper', color: '#c77dff' },
+  stupase: { name: 'StuPASE', color: '#35c46a' }, cohere: { name: 'Cohere', color: '#ff6b6b' },
+  distil: { name: 'distil', color: '#e6b800' }, qwen: { name: 'Qwen', color: '#00b3a4' },
+};
+async function lanesFromTable(sid) {
+  const rows = (await pool.query('select model,variant,words from model_transcripts where session_id=$1 order by model,variant', [sid])).rows;
+  const streams = []; let el = null, fusion = null;
+  for (const r of rows) {
+    const ws = Array.isArray(r.words) ? r.words : (r.words ? JSON.parse(r.words) : []);
+    const conv = ws.filter(w => w.s != null).map(w => ({ w: w.w, t0: w.s, t1: (w.e != null ? w.e : w.s), c: (w.c == null ? null : w.c) }));
+    if (r.model === 'elevenlabs') { el = conv.map(w => ({ w: w.w, t0: w.t0, t1: w.t1 })); continue; }
+    if (r.model === 'fusion') { fusion = conv; continue; }
+    const st = STREAM_STYLE[r.model] || { name: r.model.charAt(0).toUpperCase() + r.model.slice(1), color: '#8a8a92' };
+    streams.push({ name: st.name + (r.variant && r.variant !== 'mix' ? '·' + r.variant : ''), color: st.color, words: conv });
+  }
+  return { model_streams: streams, el_words: el, has_el: !!el, words: fusion };
+}
+app.get('/media/_derived/:sid/timeline.json', requireAdmin, async (req, res) => {
+  const sid = String(req.params.sid).replace(/[^a-zA-Z0-9._-]/g, '_');
+  try {
+    const m = (await pool.query('select * from timeline_meta where session_id=$1', [sid])).rows[0];
+    if (!m) {   // legacy grace: no scaffold row yet -> serve the stored blob if present
+      const key = '_derived/' + sid + '/timeline.json';
+      if (await storage.exists(key)) { res.type('application/json'); return res.send(await storage.get(key)); }
+      return res.status(404).json({ error: 'no timeline for session' });
+    }
+    const lanes = await lanesFromTable(sid);
+    const tl = {
+      session: sid, dur: m.dur, stereo: m.stereo, noise_floor_db: m.noise_floor_db, variants: m.variants,
+      peaks: (m.peaks_min && m.peaks_max) ? { rate: m.peaks_rate, min: m.peaks_min.toString('base64'), max: m.peaks_max.toString('base64') } : undefined,
+      tags: m.tags || [], segs: m.segs || [], n_segments: (m.segs || []).length,
+      model_streams: lanes.model_streams, words: lanes.words || [], el_words: lanes.el_words || [], has_el: lanes.has_el,
+    };
+    res.type('application/json'); res.send(JSON.stringify(tl));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---- media serving (admin only) ----
 // Goes through the storage seam: disk today (sendFile), a presigned/CDN redirect once S3/R2 is wired.
 app.get('/media/*', requireAdmin, (req, res) => {
@@ -1133,37 +1196,22 @@ app.post('/admin/timeline/:session', (req, res) => {
     .catch(e => res.status(500).json({ ok: false, error: String(e && e.message || e) }));
 });
 
-// "Table = truth": rebuild the timeline's transcript lanes (model_streams + EL + fused words) FROM the
-// model_transcripts table. Reads the base timeline.json (audio scaffold: peaks/tags/segs/dur — untouched),
-// replaces its lanes with the table's rows (words are seconds-from-session-start = the timeline's t0/t1 grid),
-// re-stores it. INGEST_TOKEN. Call after posting model rows; makes the table the source of the lanes.
-const STREAM_STYLE = {
-  parakeet: { name: 'Parakeet', color: '#4f8cff' }, whisper: { name: 'Whisper', color: '#c77dff' },
-  stupase: { name: 'StuPASE', color: '#35c46a' }, cohere: { name: 'Cohere', color: '#ff6b6b' },
-  distil: { name: 'distil', color: '#e6b800' }, qwen: { name: 'Qwen', color: '#00b3a4' },
-};
+// Legacy blob-cache updater: bake the DB-derived lanes into the stored _derived blob. The DB assembler above is
+// now the primary serve path, so this is only a fallback cache; kept so post_model_transcripts.py --rebuild keeps
+// working during migration. No-ops cleanly when there's no blob (the assembler serves from the DB regardless).
 app.post('/admin/timeline/:session/rebuild-streams', async (req, res) => {
   if (!INGEST_TOKEN || (req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
   const sid = String(req.params.session).replace(/[^a-zA-Z0-9._-]/g, '_');
   const key = '_derived/' + sid + '/timeline.json';
-  if (!(await storage.exists(key))) return res.status(404).json({ error: 'no base timeline.json — run the pipeline first' });
+  const lanes = await lanesFromTable(sid);
+  if (!(await storage.exists(key))) return res.json({ ok: true, session: sid, note: 'DB assembler serves the timeline; no blob cache to update', streams: lanes.model_streams.map(s => ({ name: s.name, words: s.words.length })) });
   let tl; try { tl = JSON.parse((await storage.get(key)).toString('utf8')); } catch (e) { return res.status(500).json({ error: 'base timeline unparseable: ' + e.message }); }
-  const rows = (await pool.query('select model,variant,words from model_transcripts where session_id=$1 order by model,variant', [sid])).rows;
-  const streams = []; let el = null, fusion = null;
-  for (const r of rows) {
-    const ws = Array.isArray(r.words) ? r.words : (r.words ? JSON.parse(r.words) : []);
-    const conv = ws.filter(w => w.s != null).map(w => ({ w: w.w, t0: w.s, t1: (w.e != null ? w.e : w.s), c: (w.c == null ? null : w.c) }));
-    if (r.model === 'elevenlabs') { el = conv.map(w => ({ w: w.w, t0: w.t0, t1: w.t1 })); continue; }
-    if (r.model === 'fusion') { fusion = conv; continue; }
-    const st = STREAM_STYLE[r.model] || { name: r.model.charAt(0).toUpperCase() + r.model.slice(1), color: '#8a8a92' };
-    streams.push({ name: st.name + (r.variant && r.variant !== 'mix' ? '·' + r.variant : ''), color: st.color, words: conv });
-  }
-  tl.model_streams = streams;
-  if (el) { tl.el_words = el; tl.has_el = true; }
-  if (fusion) tl.words = fusion;   // the table's fusion row is the source of truth for the fused lane
+  tl.model_streams = lanes.model_streams;
+  if (lanes.el_words) { tl.el_words = lanes.el_words; tl.has_el = true; }
+  if (lanes.words) tl.words = lanes.words;
   const buf = Buffer.from(JSON.stringify(tl));
   await storage.put(key, buf);
-  res.json({ ok: true, session: sid, derived_from_table: true, streams: streams.map(s => ({ name: s.name, words: s.words.length })), el_words: el ? el.length : 0, fused_words: fusion ? fusion.length : 0, bytes: buf.length });
+  res.json({ ok: true, session: sid, derived_from_table: true, streams: lanes.model_streams.map(s => ({ name: s.name, words: s.words.length })), el_words: lanes.el_words ? lanes.el_words.length : 0, fused_words: lanes.words ? lanes.words.length : 0, bytes: buf.length });
 });
 
 app.post('/admin/apk', (req, res) => {
