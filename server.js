@@ -1133,6 +1133,39 @@ app.post('/admin/timeline/:session', (req, res) => {
     .catch(e => res.status(500).json({ ok: false, error: String(e && e.message || e) }));
 });
 
+// "Table = truth": rebuild the timeline's transcript lanes (model_streams + EL + fused words) FROM the
+// model_transcripts table. Reads the base timeline.json (audio scaffold: peaks/tags/segs/dur — untouched),
+// replaces its lanes with the table's rows (words are seconds-from-session-start = the timeline's t0/t1 grid),
+// re-stores it. INGEST_TOKEN. Call after posting model rows; makes the table the source of the lanes.
+const STREAM_STYLE = {
+  parakeet: { name: 'Parakeet', color: '#4f8cff' }, whisper: { name: 'Whisper', color: '#c77dff' },
+  stupase: { name: 'StuPASE', color: '#35c46a' }, cohere: { name: 'Cohere', color: '#ff6b6b' },
+  distil: { name: 'distil', color: '#e6b800' }, qwen: { name: 'Qwen', color: '#00b3a4' },
+};
+app.post('/admin/timeline/:session/rebuild-streams', async (req, res) => {
+  if (!INGEST_TOKEN || (req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const sid = String(req.params.session).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const key = '_derived/' + sid + '/timeline.json';
+  if (!(await storage.exists(key))) return res.status(404).json({ error: 'no base timeline.json — run the pipeline first' });
+  let tl; try { tl = JSON.parse((await storage.get(key)).toString('utf8')); } catch (e) { return res.status(500).json({ error: 'base timeline unparseable: ' + e.message }); }
+  const rows = (await pool.query('select model,variant,words from model_transcripts where session_id=$1 order by model,variant', [sid])).rows;
+  const streams = []; let el = null, fusion = null;
+  for (const r of rows) {
+    const ws = Array.isArray(r.words) ? r.words : (r.words ? JSON.parse(r.words) : []);
+    const conv = ws.filter(w => w.s != null).map(w => ({ w: w.w, t0: w.s, t1: (w.e != null ? w.e : w.s), c: (w.c == null ? null : w.c) }));
+    if (r.model === 'elevenlabs') { el = conv.map(w => ({ w: w.w, t0: w.t0, t1: w.t1 })); continue; }
+    if (r.model === 'fusion') { fusion = conv; continue; }
+    const st = STREAM_STYLE[r.model] || { name: r.model.charAt(0).toUpperCase() + r.model.slice(1), color: '#8a8a92' };
+    streams.push({ name: st.name + (r.variant && r.variant !== 'mix' ? '·' + r.variant : ''), color: st.color, words: conv });
+  }
+  tl.model_streams = streams;
+  if (el) { tl.el_words = el; tl.has_el = true; }
+  if (fusion) tl.words = fusion;   // the table's fusion row is the source of truth for the fused lane
+  const buf = Buffer.from(JSON.stringify(tl));
+  await storage.put(key, buf);
+  res.json({ ok: true, session: sid, derived_from_table: true, streams: streams.map(s => ({ name: s.name, words: s.words.length })), el_words: el ? el.length : 0, fused_words: fusion ? fusion.length : 0, bytes: buf.length });
+});
+
 app.post('/admin/apk', (req, res) => {
   const auth = req.header('authorization') || '';
   if (!INGEST_TOKEN || auth !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
