@@ -561,6 +561,58 @@ app.post('/admin/model-transcripts/:session', express.json({ limit: '96mb' }), a
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Pipeline run status (migration 0010 pipeline_runs) — the box-hosted conductor POSTs CONTENT-FREE telemetry as it
+// works so a run is monitorable via /api/pipeline-status + /pipeline WITHOUT the laptop that started it, and without
+// exposing transcript/audio content. INGEST_TOKEN. Upsert on (run_id, session_id); phases jsonb accumulates seconds.
+app.post('/admin/run-status', express.json({ limit: '256kb' }), async (req, res) => {
+  if (!INGEST_TOKEN || (req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  const b = req.body || {};
+  const runId = String(b.run_id || '').slice(0, 120);
+  const sid = String(b.session || b.session_id || '').replace(/[^0-9A-Za-z._-]/g, '');
+  if (!runId || !sid) return res.status(400).json({ error: 'run_id and session required' });
+  const terminal = ['done', 'failed', 'skipped'].includes(String(b.status || ''));
+  try {
+    await pool.query(
+      `insert into pipeline_runs (run_id,session_id,box,phase,model,status,n_chunks,n_segments,progress,note,phases,meta,updated_at,ended_at,elapsed_secs)
+       values ($1,$2,$3,$4,$5,coalesce($6,'running'),$7,$8,$9,$10,coalesce($11,'{}')::jsonb,coalesce($12,'{}')::jsonb,now(),$13,$14)
+       on conflict (run_id,session_id) do update set
+         box=coalesce(excluded.box, pipeline_runs.box),
+         phase=coalesce(excluded.phase, pipeline_runs.phase),
+         model=excluded.model,
+         status=coalesce($6, pipeline_runs.status),
+         n_chunks=coalesce(excluded.n_chunks, pipeline_runs.n_chunks),
+         n_segments=coalesce(excluded.n_segments, pipeline_runs.n_segments),
+         progress=excluded.progress, note=excluded.note,
+         phases=pipeline_runs.phases || coalesce(excluded.phases,'{}'::jsonb),
+         meta=pipeline_runs.meta || coalesce(excluded.meta,'{}'::jsonb),
+         updated_at=now(),
+         ended_at=coalesce(excluded.ended_at, pipeline_runs.ended_at),
+         elapsed_secs=coalesce(excluded.elapsed_secs, pipeline_runs.elapsed_secs)`,
+      [runId, sid, b.box || null, b.phase || null, b.model || null, b.status || null,
+        b.n_chunks ?? null, b.n_segments ?? null, b.progress ?? null, b.note ? String(b.note).slice(0, 300) : null,
+        b.phases ? JSON.stringify(b.phases) : null, b.meta ? JSON.stringify(b.meta) : null,
+        terminal ? new Date().toISOString() : null, b.elapsed_secs ?? null]);
+    res.json({ ok: true, run_id: runId, session: sid, phase: b.phase || null, status: b.status || 'running' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Live pipeline status for the monitor + /pipeline dashboard — CONTENT-FREE (session ids + phase/model/timing only).
+app.get('/api/pipeline-status', requireAdmin, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 80, 300);
+  const rows = (await pool.query(
+    `select run_id,session_id,box,phase,model,status,n_chunks,n_segments,progress,note,elapsed_secs,phases,
+            extract(epoch from started_at)::int started_at, extract(epoch from updated_at)::int updated_at,
+            extract(epoch from ended_at)::int ended_at, extract(epoch from now()-updated_at)::int age_secs
+       from pipeline_runs order by updated_at desc limit $1`, [limit])).rows;
+  rows.forEach((r) => { r.live = r.status === 'running' && r.age_secs != null && r.age_secs < 180; });
+  const active = rows.filter((r) => r.live);
+  res.json({
+    now: Math.floor(Date.now() / 1000), active_count: active.length,
+    active: active.map((r) => ({ session: r.session_id, phase: r.phase, model: r.model, box: r.box, age: r.age_secs, run_id: r.run_id })),
+    runs: rows,
+  });
+});
+
 // Audio-scaffold ingest (migration 0009 timeline_meta) — the pipeline POSTs the audio-derived timeline parts so
 // the timeline assembles fully from the DB (see the /media/_derived/:sid/timeline.json assembler). INGEST_TOKEN,
 // own large json limit (peaks base64 ~1 MB/hr), before the global 100 kb cap. Upsert on session_id.
@@ -1276,6 +1328,7 @@ app.use('/public', requireAdmin, express.static(path.join(__dirname, 'public')))
 app.get('/', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
 // ---- /live: the full-screen live media-player view (same password gate) ----
 app.get('/live', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'live.html')));
+app.get('/pipeline', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'pipeline.html')));
 // ---- /curate: build/manage publications (password-gated). Published views live at /publish/:id (open). ----
 app.get('/curate', requireAdmin, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'curate.html')));
 // ---- /timeline/:session: server-hosted, HLS-streaming acoustic timeline for a processed session. ----
