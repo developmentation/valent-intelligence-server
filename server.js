@@ -567,6 +567,9 @@ app.post('/admin/model-transcripts/:session', express.json({ limit: '96mb' }), a
 app.post('/admin/run-status', express.json({ limit: '256kb' }), async (req, res) => {
   if (!INGEST_TOKEN || (req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
   const b = req.body || {};
+  // Maintenance: purge a whole run's rows (test rows, or a superseded/abandoned conductor run) or all stale-running.
+  if (b.purge_run_id) { await pool.query('delete from pipeline_runs where run_id=$1', [String(b.purge_run_id).slice(0, 120)]); return res.json({ ok: true, purged: String(b.purge_run_id) }); }
+  if (b.purge_stale_mins) { const r = await pool.query("delete from pipeline_runs where status='running' and updated_at < now() - ($1 || ' minutes')::interval", [String(Number(b.purge_stale_mins) || 30)]); return res.json({ ok: true, purged_stale: r.rowCount }); }
   const runId = String(b.run_id || '').slice(0, 120);
   const sid = String(b.session || b.session_id || '').replace(/[^0-9A-Za-z._-]/g, '');
   if (!runId || !sid) return res.status(400).json({ error: 'run_id and session required' });
@@ -603,7 +606,8 @@ app.get('/api/pipeline-status', requireAdmin, async (req, res) => {
     `select run_id,session_id,box,phase,model,status,n_chunks,n_segments,progress,note,elapsed_secs,phases,
             extract(epoch from started_at)::int started_at, extract(epoch from updated_at)::int updated_at,
             extract(epoch from ended_at)::int ended_at, extract(epoch from now()-updated_at)::int age_secs
-       from pipeline_runs order by updated_at desc limit $1`, [limit])).rows;
+       from pipeline_runs where run_id not like 'selftest%' and updated_at > now() - interval '3 days'
+       order by updated_at desc limit $1`, [limit])).rows;
   rows.forEach((r) => { r.live = r.status === 'running' && r.age_secs != null && r.age_secs < 180; });
   const active = rows.filter((r) => r.live);
   res.json({
