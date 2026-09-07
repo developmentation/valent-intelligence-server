@@ -12,6 +12,13 @@ const imagepipe = require('./imagepipe');
 const videopipe = require('./videopipe');
 const uploadpipe = require('./uploadpipe');
 
+// CRASH GUARDS — a single request's unhandled async error (e.g. a transient DB blip in an endpoint without its own
+// try/catch) must NEVER take the whole process down. Without these, Node exits(1) on any unhandled rejection — which
+// is exactly what crashed the service ("Exited with status 1") under the /api/pipeline-status poll. Log and stay up;
+// individual requests still fail, but the server survives. Connections are stateless, so this is safe for a web tier.
+process.on('unhandledRejection', (e) => { try { console.error('[unhandledRejection]', (e && e.stack) || e); } catch (_) {} });
+process.on('uncaughtException', (e) => { try { console.error('[uncaughtException]', (e && e.stack) || e); } catch (_) {} });
+
 // Serve a media key: a video's cached web-optimized MP4 when ready (else the original + a background
 // transcode), or an image (resized via ?w=, or original). `?dl=1` / `?orig=1` always force the original.
 function serveMedia(req, res, rel) {
@@ -601,6 +608,7 @@ app.post('/admin/run-status', express.json({ limit: '256kb' }), async (req, res)
 
 // Live pipeline status for the monitor + /pipeline dashboard — CONTENT-FREE (session ids + phase/model/timing only).
 app.get('/api/pipeline-status', requireAdmin, async (req, res) => {
+ try {
   const limit = Math.min(Number(req.query.limit) || 80, 300);
   const rows = (await pool.query(
     `select run_id,session_id,box,phase,model,status,n_chunks,n_segments,progress,note,elapsed_secs,phases,
@@ -615,6 +623,7 @@ app.get('/api/pipeline-status', requireAdmin, async (req, res) => {
     active: active.map((r) => ({ session: r.session_id, phase: r.phase, model: r.model, box: r.box, age: r.age_secs, run_id: r.run_id })),
     runs: rows,
   });
+ } catch (e) { res.status(500).json({ error: String(e && e.message || e) }); }
 });
 
 // Audio-scaffold ingest (migration 0009 timeline_meta) — the pipeline POSTs the audio-derived timeline parts so
