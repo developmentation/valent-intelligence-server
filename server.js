@@ -11,6 +11,7 @@ const geotrack = require('./geotrack');
 const imagepipe = require('./imagepipe');
 const videopipe = require('./videopipe');
 const uploadpipe = require('./uploadpipe');
+const s3mig = require('./s3mig');
 
 // CRASH GUARDS — a single request's unhandled async error (e.g. a transient DB blip in an endpoint without its own
 // try/catch) must NEVER take the whole process down. Without these, Node exits(1) on any unhandled rejection — which
@@ -284,6 +285,56 @@ app.get('/admin/stats', async (req, res) => {
     ]);
     res.json({ byKind, byStream, biggest, sessions, lastBatch });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// ---- one-time migration: copy every file in the DB from the local disk -> OVH object storage ----
+// Additive + non-destructive: reads disk, PUTs to S3, skips anything already present with a matching size.
+// Never deletes local files (raw is retained until we've verified OVH holds everything). Resumable — just
+// call it again; already-migrated keys are skipped by a HEAD check.
+let migState = { running: false, total: 0, done: 0, put: 0, skipped: 0, missingLocal: 0, failed: 0,
+                 bytes: 0, lastKey: '', startedAt: 0, finishedAt: 0, errors: [] };
+app.post('/admin/migrate-s3', (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  if (!s3mig.configured) return res.status(400).json({ error: 'S3 env not set (S3_ENDPOINT/BUCKET/ACCESS/SECRET)' });
+  if (migState.running) return res.json({ already: true, state: migState });
+  migState = { running: true, total: 0, done: 0, put: 0, skipped: 0, missingLocal: 0, failed: 0,
+               bytes: 0, lastKey: '', startedAt: Date.now(), finishedAt: 0, errors: [] };
+  (async () => {
+    try {
+      migState.total = (await pool.query('select count(*)::int n from files')).rows[0].n;
+      const PAGE = 500, CONC = 6;
+      for (let offset = 0; ; offset += PAGE) {
+        const page = (await pool.query(
+          'select path, bytes from files order by session_id, path limit $1 offset $2', [PAGE, offset])).rows;
+        if (!page.length) break;
+        let i = 0;
+        await Promise.all(Array.from({ length: CONC }, async () => {
+          while (i < page.length) {
+            const f = page[i++]; const key = f.path;
+            try {
+              if (!key) { migState.done++; continue; }
+              const lp = storage.localPath(key);
+              if (!fs.existsSync(lp)) { migState.missingLocal++; migState.done++; continue; }
+              const size = fs.statSync(lp).size;
+              const h = await s3mig.headObject(key);
+              if (h.status === 200 && h.size === size) { migState.skipped++; }
+              else { await s3mig.putFile(key, lp, size); migState.put++; migState.bytes += size; }
+              migState.lastKey = key; migState.done++;
+            } catch (e) {
+              migState.failed++; migState.done++;
+              if (migState.errors.length < 30) migState.errors.push(String(key) + ': ' + String(e.message || e));
+            }
+          }
+        }));
+      }
+    } catch (e) { migState.errors.push('fatal: ' + String(e.message || e)); }
+    migState.running = false; migState.finishedAt = Date.now();
+  })();
+  res.json({ started: true, target: { host: s3mig.HOST, bucket: s3mig.BUCKET, region: s3mig.REGION } });
+});
+app.get('/admin/migrate-s3/status', (req, res) => {
+  if ((req.header('authorization') || '') !== 'Bearer ' + INGEST_TOKEN) return res.status(401).end();
+  res.json(migState);
 });
 
 // Deep end-to-end validation of one session: full upload (chunk-index contiguity, no gaps),
