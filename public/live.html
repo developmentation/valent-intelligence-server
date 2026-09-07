@@ -115,6 +115,8 @@
     box-shadow:0 12px 40px rgba(0,0,0,.5);background:#0a0d12;transition:opacity .3s}
   #map{width:100%;height:100%;background:#0a0d12}
   .leaflet-container{background:#0a0d12;font-family:var(--mono)}
+  /* dark map from keyless light OSM tiles — filter the TILE PANE only (markers/track stay true colour) */
+  body.mapdark .leaflet-tile-pane{filter:invert(1) hue-rotate(180deg) brightness(.95) contrast(.9) saturate(.85)}
   .headpulse{width:14px;height:14px;border-radius:50%;background:var(--accent);
     box-shadow:0 0 0 0 rgba(255,90,60,.6);animation:pulse2 2s infinite;border:2px solid #fff}
   @keyframes pulse2{0%{box-shadow:0 0 0 0 rgba(255,90,60,.55)}70%{box-shadow:0 0 0 14px rgba(255,90,60,0)}100%{box-shadow:0 0 0 0 rgba(255,90,60,0)}}
@@ -289,8 +291,10 @@ const UNPIN_MS=20000;          // after a manual pick, revert to auto/newest
 
 let map, trackLayer, headMarker, tileLayer, mapExpanded=false;
 let mapTheme='dark'; try{ mapTheme=localStorage.getItem('liveMapTheme')||'dark'; }catch(e){}
-const TILES={ dark:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-              light:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' };
+// Open OpenStreetMap raster tiles — keyless, no licensed provider. Same tiles for both themes; the dark look comes
+// from a CSS filter on the tile pane (see .mapdark rule), so track lines + markers keep their true colors.
+const OSM='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+const TILES={ dark:OSM, light:OSM };
 // first/last are DEVICE wall clock (for duration); liveAt is the SERVER receive time (updated_at) —
 // the skew-proof recency signal used for live/replay + "last signal", since the device clock can be wrong.
 let state={ sid:null, device:'', live:false, first:0, last:0, liveAt:0,
@@ -301,7 +305,8 @@ let state={ sid:null, device:'', live:false, first:0, last:0, liveAt:0,
 function setTiles(theme){
   mapTheme=theme; try{ localStorage.setItem('liveMapTheme',theme); }catch(e){}
   if(tileLayer) map.removeLayer(tileLayer);
-  tileLayer=L.tileLayer(TILES[theme]||TILES.dark,{maxZoom:19,subdomains:'abcd'}).addTo(map);
+  tileLayer=L.tileLayer(TILES[theme]||TILES.dark,{maxZoom:19,subdomains:'abc',attribution:'© OpenStreetMap'}).addTo(map);
+  document.body.classList.toggle('mapdark', theme!=='light');   // CSS darkens the OSM tile pane for the dark theme
   $('#mapwrap').style.background=(theme==='light'?'#e9edf0':'#0a0d12');
 }
 function initMap(){

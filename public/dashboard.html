@@ -65,6 +65,8 @@
   .sval{font-size:13px;color:var(--violet);font-family:ui-monospace,Menlo,monospace;margin-top:2px}
   .sago{font-size:9px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
   .leaflet-container{background:#111}
+  /* dark map from keyless light OSM tiles — filter TILE PANE only (markers/track keep true colour) */
+  .leaflet-tile-pane{filter:invert(1) hue-rotate(180deg) brightness(.95) contrast(.9) saturate(.85)}
   .gallery figure{cursor:pointer}
   .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.93);display:none;align-items:center;justify-content:center;z-index:1000}
   .lightbox.open{display:flex}

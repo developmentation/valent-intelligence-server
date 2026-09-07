@@ -32,6 +32,8 @@
   /* editor */
   #map{height:340px;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#0a0d12}
   .leaflet-container{background:#0a0d12}
+  /* dark map from keyless light OSM tiles — filter TILE PANE only (markers/track keep true colour); curate is dark-only */
+  .leaflet-tile-pane{filter:invert(1) hue-rotate(180deg) brightness(.95) contrast(.9) saturate(.85)}
   input[type=text],textarea{width:100%;background:#0b0e14;border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:10px;font-family:inherit;font-size:14px}
   textarea{min-height:56px;resize:vertical}
   label.fld{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:10px 0 4px}
@@ -172,7 +174,7 @@ async function refreshEditor(){
   loadGallery();
 }
 function ensureMap(){ if(map) return; map=L.map('map',{zoomControl:true,attributionControl:false}).setView([20,0],2);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19,subdomains:'abcd'}).addTo(map); trackLayer=L.layerGroup().addTo(map); }
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,subdomains:'abc',attribution:'© OpenStreetMap'}).addTo(map); trackLayer=L.layerGroup().addTo(map); }
 async function drawMap(){
   if(typeof L==='undefined'){ return void setTimeout(drawMap,80); } // Leaflet is deferred; wait for it
   ensureMap(); trackLayer.clearLayers();
