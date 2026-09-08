@@ -14,6 +14,9 @@ const SK = process.env.S3_SECRET_KEY || '';
 const HOST = EP ? new URL(EP).host : '';
 const SERVICE = 's3';
 const configured = !!(EP && BUCKET && AK && SK);
+// Reuse TLS connections — without this every request re-does a full cross-Atlantic TLS handshake
+// (Frankfurt->BHS ~90ms RTT), which dominated and capped throughput at ~9 files/s.
+const agent = new https.Agent({ keepAlive: true, maxSockets: 128, keepAliveMsecs: 30000 });
 
 const hmac = (key, msg) => crypto.createHmac('sha256', key).update(msg).digest();
 function signingKey(date) {
@@ -44,7 +47,7 @@ function sign(method, key, extraHeaders) {
 function headObject(key) {
   return new Promise((resolve) => {
     const { path, headers } = sign('HEAD', key, {});
-    const req = https.request({ host: HOST, path, method: 'HEAD', headers, timeout: 30000 }, (res) => {
+    const req = https.request({ host: HOST, path, method: 'HEAD', headers, agent, timeout: 30000 }, (res) => {
       resolve({ status: res.statusCode, size: Number(res.headers['content-length'] || -1) });
       res.resume();
     });
@@ -58,7 +61,7 @@ function headObject(key) {
 function putFile(key, localPath, size) {
   return new Promise((resolve, reject) => {
     const { path, headers } = sign('PUT', key, { 'content-length': String(size) });
-    const req = https.request({ host: HOST, path, method: 'PUT', headers, timeout: 600000 }, (res) => {
+    const req = https.request({ host: HOST, path, method: 'PUT', headers, agent, timeout: 600000 }, (res) => {
       let b = ''; res.on('data', d => b += d); res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) resolve(true);
         else reject(new Error('PUT ' + res.statusCode + ' ' + b.slice(0, 200)));

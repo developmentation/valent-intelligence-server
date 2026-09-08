@@ -302,7 +302,8 @@ app.post('/admin/migrate-s3', (req, res) => {
   (async () => {
     try {
       migState.total = (await pool.query('select count(*)::int n from files')).rows[0].n;
-      const PAGE = 500, CONC = 6;
+      const CONC = Math.max(1, Math.min(128, parseInt(req.query.conc, 10) || 48));
+      const PAGE = Math.max(CONC * 4, 500);
       for (let offset = 0; ; offset += PAGE) {
         const page = (await pool.query(
           'select path, bytes from files order by session_id, path limit $1 offset $2', [PAGE, offset])).rows;
