@@ -134,9 +134,17 @@ async function complete(storage, id) {
     return { status: 422, error: 'final sha mismatch — upload discarded, please restart', expected: m.sha256, got };
   }
   const key = `${m.session}/${m.stream}/${m.filename}`;
-  let dest; try { dest = storage.localPath(key); } catch (e) { return { status: 400, error: String(e.message) }; }
-  try { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.renameSync(finalTmp, dest); }
-  catch (e) { return { status: 500, error: String(e && e.message || e) }; }
+  if (typeof storage.localPath === 'function') {
+    // disk driver: move the assembled file into place
+    let dest; try { dest = storage.localPath(key); } catch (e) { return { status: 400, error: String(e.message) }; }
+    try { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.renameSync(finalTmp, dest); }
+    catch (e) { return { status: 500, error: String(e && e.message || e) }; }
+  } else {
+    // object-store driver: stream the assembled file up, then drop the local staging dir
+    try { await storage.putStream(key, fs.createReadStream(finalTmp)); }
+    catch (e) { return { status: 500, error: 'upload to object store failed: ' + String(e && e.message || e) }; }
+    try { fs.rmSync(m.dir, { recursive: true, force: true }); } catch (_) {}
+  }
   return { status: 200, ok: true, key, bytes: m.size, sha256: m.sha256, session: m.session, stream: m.stream, filename: m.filename, dir: m.dir };
 }
 

@@ -34,12 +34,16 @@ async function sendImage(req, res, storage, rel, downloadName) {
   // AND videos, so a viewer sees the fast compressed version on the page but can pull the full-res source.
   if (req.query && req.query.dl) return storage.serve(res, rel, path.basename(rel));
   const w = parseInt(req.query && req.query.w, 10);
-  const wantResize = sharp && w && WIDTHS.has(w) && IMG_RE.test(rel) && typeof storage.localPath === 'function';
+  const canResize = typeof storage.localPath === 'function' || typeof storage.ensureLocal === 'function';
+  const wantResize = sharp && w && WIDTHS.has(w) && IMG_RE.test(rel) && canResize;
   if (!wantResize) return storage.serve(res, rel, downloadName);
 
-  const src = storage.localPath(rel);
   let out;
   try { out = derivedAbs(storage.root, rel, w); } catch (_) { return storage.serve(res, rel, downloadName); }
+  // Disk driver has the file in place; S3 driver pulls the original into the local cache on demand.
+  let src;
+  try { src = typeof storage.localPath === 'function' ? storage.localPath(rel) : await storage.ensureLocal(rel); }
+  catch (_) { return storage.serve(res, rel, downloadName); }
 
   // A derived JPEG is immutable (its source never changes) — cache hard, both at the browser and edge.
   res.set('Cache-Control', 'public, max-age=31536000, immutable');

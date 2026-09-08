@@ -70,10 +70,102 @@ const disk = {
   },
 };
 
-// Only the disk driver exists today. When S3/R2 is wired, branch on DRIVER here and return an object
-// with the same shape (publicUrl → presigned/CDN, serve → 302 redirect, localPath → undefined).
-if (DRIVER !== 'disk') {
-  console.warn(`storage: driver "${DRIVER}" not implemented yet — falling back to disk`);
+// ── S3 driver (OVH object storage) ────────────────────────────────────────────────────────────────
+// Raw + original media live in the bucket (durable, uncapped, free egress). The instance's local disk
+// (ROOT) is used only as a CACHE for derived artifacts (image resizes, video renditions, posters) and
+// upload staging — regenerable from the bucket, so it can be small and ephemeral. Reads that need a
+// real file (transcode/resize source) call the async `ensureLocal(key)` which pulls the original into the
+// cache on demand. Serving redirects to a short-lived presigned URL so bytes go client↔OVH directly.
+function makeS3() {
+  const { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand } =
+    require('@aws-sdk/client-s3');
+  const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+  const Bucket = process.env.S3_BUCKET;
+  const client = new S3Client({
+    region: process.env.S3_REGION || 'bhs',
+    endpoint: process.env.S3_ENDPOINT,
+    forcePathStyle: true,
+    credentials: { accessKeyId: process.env.S3_ACCESS_KEY, secretAccessKey: process.env.S3_SECRET_KEY },
+  });
+  const CACHE = ROOT;                       // local NVMe cache/staging root (MEDIA_ROOT)
+  const cabs = (key) => abs(key);           // reuse the traversal-safe local path resolver
+  const streamToBuffer = (s) => new Promise((res, rej) => {
+    const c = []; s.on('data', (d) => c.push(d)); s.on('error', rej); s.on('end', () => res(Buffer.concat(c)));
+  });
+
+  return {
+    driver: 's3',
+    root: CACHE,                            // uploadpipe staging + derived caches live here (local)
+    async put(key, buf) {
+      await client.send(new PutObjectCommand({ Bucket, Key: key, Body: buf, ContentLength: buf.length }));
+      return { key, bytes: buf.length };
+    },
+    // Stream to a local temp first (to get length + sha), then PUT. Constant memory relative to a buffer.
+    putStream(key, readable) {
+      const tmp = path.join(CACHE, '_tmp', crypto.randomBytes(16).toString('hex'));
+      fs.mkdirSync(path.dirname(tmp), { recursive: true });
+      return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256'); let bytes = 0;
+        const ws = fs.createWriteStream(tmp);
+        const fail = (e) => { ws.destroy(); fs.unlink(tmp, () => {}); reject(e); };
+        readable.on('data', (d) => { bytes += d.length; hash.update(d); });
+        readable.on('error', fail); ws.on('error', fail);
+        ws.on('finish', async () => {
+          try {
+            await client.send(new PutObjectCommand({ Bucket, Key: key, Body: fs.createReadStream(tmp), ContentLength: bytes }));
+            fs.unlink(tmp, () => {});
+            resolve({ key, bytes, sha256: hash.digest('hex') });
+          } catch (e) { fs.unlink(tmp, () => {}); reject(e); }
+        });
+        readable.pipe(ws);
+      });
+    },
+    async get(key) {
+      const r = await client.send(new GetObjectCommand({ Bucket, Key: key }));
+      return streamToBuffer(r.Body);
+    },
+    async exists(key) {
+      try { await client.send(new HeadObjectCommand({ Bucket, Key: key })); return true; }
+      catch { return false; }
+    },
+    async del(key) {
+      try { await client.send(new DeleteObjectCommand({ Bucket, Key: key })); return true; } catch { return false; }
+    },
+    // No synchronous local path on S3 — callers that need a real file use ensureLocal (async) instead.
+    localPath: undefined,
+    // Pull the object into the local cache (idempotent) and return its path — for transcode/resize sources.
+    async ensureLocal(key) {
+      const p = cabs(key);
+      if (fs.existsSync(p) && fs.statSync(p).size > 0) return p;
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const r = await client.send(new GetObjectCommand({ Bucket, Key: key }));
+      await new Promise((resolve, reject) => {
+        const ws = fs.createWriteStream(p); r.Body.on('error', reject); ws.on('error', reject);
+        ws.on('finish', resolve); r.Body.pipe(ws);
+      });
+      return p;
+    },
+    publicUrl(key) { return '/media/' + String(key).split(path.sep).join('/'); },
+    // Redirect to a short-lived presigned URL: client fetches straight from OVH (free egress), VM doesn't proxy.
+    async serve(res, key, downloadName) {
+      try {
+        const cmd = new GetObjectCommand({
+          Bucket, Key: key,
+          ...(downloadName ? { ResponseContentDisposition: `attachment; filename="${downloadName}"` } : {}),
+        });
+        const url = await getSignedUrl(client, cmd, { expiresIn: 3600 });
+        res.redirect(302, url);
+      } catch (e) { res.status(404).end(); }
+    },
+  };
 }
 
-module.exports = disk;
+let impl = disk;
+if (DRIVER === 's3') {
+  try { impl = makeS3(); }
+  catch (e) { console.error('storage: S3 driver init failed, falling back to disk:', e.message); impl = disk; }
+} else if (DRIVER !== 'disk') {
+  console.warn(`storage: driver "${DRIVER}" not implemented — using disk`);
+}
+
+module.exports = impl;

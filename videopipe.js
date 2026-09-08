@@ -140,34 +140,38 @@ function pump() {
   }
 }
 
-function pushJob(storage, rel, edge) {
+function pushJob(storage, rel, edge, src) {
   let out; try { out = rendAbs(storage.root, rel, edge); } catch (_) { return; }
   if (fs.existsSync(out)) return;
   const tag = `${rel}@${edge}`;
   if (inQueue.has(tag)) return;
   inQueue.add(tag);
-  queue.push({ rel, edge, out, src: storage.localPath(rel) });
+  queue.push({ rel, edge, out, src });
 }
 
-function pushPoster(storage, rel) {
+function pushPoster(storage, rel, src) {
   let out; try { out = posterAbs(storage.root, rel); } catch (_) { return; }
   if (fs.existsSync(out)) return;
   const tag = `${rel}@poster`;
   if (inQueue.has(tag)) return;
   inQueue.add(tag);
-  queue.push({ rel, poster: true, out, src: storage.localPath(rel) });
+  queue.push({ rel, poster: true, out, src });
 }
 
 async function planLadder(storage, rel) {
   if (planned.has(rel)) return;
   planned.add(rel); stat.planned++;
-  pushPoster(storage, rel);   // a real extracted frame for thumbnails
-  const srcLong = await probeLongEdge(storage.localPath(rel));
+  // Disk driver: transcode the file in place. S3 driver: pull the original into the local cache first.
+  let src;
+  try { src = typeof storage.localPath === 'function' ? storage.localPath(rel) : await storage.ensureLocal(rel); }
+  catch (_) { return; }   // can't fetch source → skip ladder; playback still serves the original
+  pushPoster(storage, rel, src);   // a real extracted frame for thumbnails
+  const srcLong = await probeLongEdge(src);
   // renditions at or below the source's long edge (so a 1080p source also gets a compressed 1080p web
   // version), capped by the ladder's top (4K sources top out at ~1080p web; original kept for download).
   let edges = LADDER.filter((L) => srcLong ? L <= srcLong : true);
   if (!edges.length) edges = [Math.min(srcLong || DEFAULT_EDGE, DEFAULT_EDGE)];  // small source → one native re-encode
-  for (const e of edges) pushJob(storage, rel, e);
+  for (const e of edges) pushJob(storage, rel, e, src);
   pump();
 }
 
