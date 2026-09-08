@@ -304,10 +304,15 @@ app.post('/admin/migrate-s3', (req, res) => {
       migState.total = (await pool.query('select count(*)::int n from files')).rows[0].n;
       const CONC = Math.max(1, Math.min(128, parseInt(req.query.conc, 10) || 48));
       const PAGE = Math.max(CONC * 4, 500);
-      for (let offset = 0; ; offset += PAGE) {
+      // KEYSET pagination on the PK (id) — O(1) per page. (OFFSET pagination was O(offset): it re-scanned
+      // `offset` rows every page, so throughput collapsed as the offset grew — the real cause of the
+      // slowdown, NOT the network, which measured 42 MB/s Render->OVH.)
+      let lastId = 0;
+      for (;;) {
         const page = (await pool.query(
-          'select path, bytes from files order by session_id, path limit $1 offset $2', [PAGE, offset])).rows;
+          'select id, path, bytes from files where id > $1 order by id limit $2', [lastId, PAGE])).rows;
         if (!page.length) break;
+        lastId = page[page.length - 1].id;
         let i = 0;
         await Promise.all(Array.from({ length: CONC }, async () => {
           while (i < page.length) {
